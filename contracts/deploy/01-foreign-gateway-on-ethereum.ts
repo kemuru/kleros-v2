@@ -1,11 +1,9 @@
-import { HardhatRuntimeEnvironment } from "hardhat/types";
+import { HardhatRuntimeEnvironment, HttpNetworkConfig } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
-import getContractAddress from "../deploy-helpers/getContractAddress";
-
-enum ForeignChains {
-  ETHEREUM_MAINNET = 1,
-  ETHEREUM_GOERLI = 5,
-}
+import { getContractAddress } from "./utils/getContractAddress";
+import { KlerosCore__factory } from "../typechain-types";
+import { Courts, ForeignChains, isSkipped } from "./utils";
+import { deployUpgradable } from "./utils/deployUpgradable";
 
 const deployForeignGateway: DeployFunction = async (hre: HardhatRuntimeEnvironment) => {
   const { ethers, deployments, getNamedAccounts, getChainId, config } = hre;
@@ -15,55 +13,43 @@ const deployForeignGateway: DeployFunction = async (hre: HardhatRuntimeEnvironme
   // fallback to hardhat node signers on local network
   const deployer = (await getNamedAccounts()).deployer ?? (await hre.ethers.getSigners())[0].address;
   const chainId = Number(await getChainId());
-  console.log("Deploying to chainId %s with deployer %s", chainId, deployer);
-
-  const homeNetworks = {
-    ETHEREUM_MAINNET: config.networks.arbitrum,
-    ETHEREUM_GOERLI: config.networks.arbitrumGoerli,
-    HARDHAT: config.networks.localhost,
-  };
+  console.log("deploying to chainId %s with deployer %s", chainId, deployer);
 
   // Hack to predict the deployment address on the home chain.
   // TODO: use deterministic deployments
-  const homeChainProvider = new ethers.providers.JsonRpcProvider(homeNetworks[ForeignChains[chainId]].url);
+  const network = config.networks[hre.network.name];
+  const homeNetwork = config.networks[network.companionNetworks.home] as HttpNetworkConfig;
+  const homeChainProvider = new ethers.providers.JsonRpcProvider(homeNetwork.url);
   let nonce = await homeChainProvider.getTransactionCount(deployer);
-  nonce += 2; // HomeGatewayToEthereum deploy tx will the third tx after this on its home network, so we add two to the current nonce.
+  nonce += 1; // HomeGatewayToEthereum Proxy deploy tx will be the 2nd tx after this on its home network, so we add 1 to the current nonce.
+  const homeGatewayAddress = getContractAddress(deployer, nonce);
+  console.log("calculated future HomeGatewayToEthereum address for nonce %d: %s", nonce, homeGatewayAddress);
+
+  const veaOutbox = await deployments.get("VeaOutboxArbToEthDevnet");
+  console.log("using VeaOutboxArbToEthDevnet at %s", veaOutbox.address);
+
   const homeChainId = (await homeChainProvider.getNetwork()).chainId;
   const homeChainIdAsBytes32 = hexZeroPad(hexlify(homeChainId), 32);
-  const homeGatewayAddress = getContractAddress(deployer, nonce);
-  console.log("Calculated future HomeGatewayToEthereum address for nonce %d: %s", nonce, homeGatewayAddress);
-
-  const veaReceiver = await deployments.get("FastBridgeReceiverOnEthereum");
-
-  const foreignGateway = await deploy("ForeignGatewayOnEthereum", {
+  await deployUpgradable(deployments, "ForeignGatewayOnEthereum", {
     from: deployer,
     contract: "ForeignGateway",
-    args: [deployer, veaReceiver.address, homeGatewayAddress, homeChainIdAsBytes32],
+    args: [deployer, veaOutbox.address, homeChainIdAsBytes32, homeGatewayAddress],
     gasLimit: 4000000,
     log: true,
   });
 
-  await execute(
-    "ForeignGatewayOnEthereum",
-    { from: deployer, log: true },
-    "changeCourtJurorFee",
-    0,
-    ethers.BigNumber.from(10).pow(17)
-  );
-
-  const metaEvidenceUri = `https://raw.githubusercontent.com/kleros/kleros-v2/master/contracts/deployments/${hre.network.name}/MetaEvidence_ArbitrableExample.json`;
-
-  await deploy("ArbitrableExample", {
-    from: deployer,
-    args: [foreignGateway.address, metaEvidenceUri],
-    log: true,
-  });
+  // TODO: disable the gateway until fully initialized with the correct fees OR allow disputeCreators to add funds again if necessary.
+  const coreDeployment = await hre.companionNetworks.home.deployments.get("KlerosCore");
+  const core = await KlerosCore__factory.connect(coreDeployment.address, homeChainProvider);
+  // TODO: set up the correct fees for the FORKING_COURT
+  const fee = (await core.courts(Courts.GENERAL)).feeForJuror;
+  await execute("ForeignGatewayOnEthereum", { from: deployer, log: true }, "changeCourtJurorFee", Courts.GENERAL, fee);
+  // TODO: set up the correct fees for the lower courts
 };
 
 deployForeignGateway.tags = ["ForeignGatewayOnEthereum"];
-deployForeignGateway.skip = async ({ getChainId }) => {
-  const chainId = Number(await getChainId());
-  return !ForeignChains[chainId];
+deployForeignGateway.skip = async ({ network }) => {
+  return isSkipped(network, !ForeignChains[network.config.chainId ?? 0]);
 };
 
 export default deployForeignGateway;

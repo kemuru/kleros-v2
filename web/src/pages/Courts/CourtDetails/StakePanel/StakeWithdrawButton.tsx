@@ -1,18 +1,21 @@
 import React, { useMemo } from "react";
 import { useParams } from "react-router-dom";
-import { BigNumber } from "ethers";
+import { useAccount, usePublicClient } from "wagmi";
 import { Button } from "@kleros/ui-components-library";
-
-import { KlerosCore } from "@kleros/kleros-v2-contracts/typechain-types/src/arbitration/KlerosCore";
-import { PNK } from "@kleros/kleros-v2-contracts/typechain-types/src/arbitration/mock/PNK";
-
-import { useWeb3 } from "hooks/useWeb3";
-import { useConnectedContract } from "hooks/useConnectedContract";
-import { usePNKAllowance } from "queries/usePNKAllowance";
-import { usePNKBalance } from "queries/usePNKBalance";
-import { useJurorBalance } from "queries/useJurorBalance";
+import {
+  getKlerosCore,
+  useKlerosCoreSetStake,
+  usePrepareKlerosCoreSetStake,
+  usePnkBalanceOf,
+  usePnkIncreaseAllowance,
+  usePreparePnkIncreaseAllowance,
+  useSortitionModuleGetJurorBalance,
+  usePnkAllowance,
+} from "hooks/contracts/generated";
+import { useCourtDetails } from "hooks/queries/useCourtDetails";
 import { wrapWithToast } from "utils/wrapWithToast";
-import { notUndefined } from "utils/index";
+import { isUndefined } from "utils/index";
+import { EnsureChain } from "components/EnsureChain";
 
 export enum ActionType {
   allowance = "allowance",
@@ -22,75 +25,93 @@ export enum ActionType {
 
 interface IActionButton {
   isSending: boolean;
-  parsedAmount: BigNumber;
+  parsedAmount: bigint;
   action: ActionType;
   setIsSending: (arg0: boolean) => void;
   setAmount: (arg0: string) => void;
+  setIsPopupOpen: (arg0: boolean) => void;
 }
 
 const StakeWithdrawButton: React.FC<IActionButton> = ({
   parsedAmount,
   action,
-  setAmount,
   isSending,
   setIsSending,
+  setIsPopupOpen,
 }) => {
   const { id } = useParams();
-  const { account } = useWeb3();
-  const { data: allowance, mutate } = usePNKAllowance(account);
-  const { data: balance } = usePNKBalance(account);
-  const { data: jurorBalance } = useJurorBalance(account, id);
-  const klerosCore = useConnectedContract("KlerosCore") as KlerosCore;
-  const pnk = useConnectedContract("PNK") as PNK;
+  const { address } = useAccount();
+  const klerosCore = getKlerosCore({});
+  const { data: courtDetails } = useCourtDetails(id);
+  const { data: balance } = usePnkBalanceOf({
+    enabled: !isUndefined(address),
+    args: [address!],
+    watch: true,
+  });
+  const { data: jurorBalance } = useSortitionModuleGetJurorBalance({
+    enabled: !isUndefined(address),
+    args: [address ?? "0x", BigInt(id ?? 0)],
+    watch: true,
+  });
+  const { data: allowance } = usePnkAllowance({
+    enabled: !isUndefined(address),
+    args: [address ?? "0x", klerosCore.address],
+    watch: true,
+  });
+  const publicClient = usePublicClient();
 
   const isStaking = action === ActionType.stake;
-  const isAllowance = isStaking && allowance && allowance.lt(parsedAmount);
+  const isAllowance = isStaking && !isUndefined(allowance) && allowance < parsedAmount;
 
   const targetStake = useMemo(() => {
-    if (action === ActionType.stake || action === ActionType.allowance) {
-      return jurorBalance?.staked.add(parsedAmount);
-    } else {
-      return jurorBalance?.staked.sub(parsedAmount);
+    if (jurorBalance) {
+      if (isAllowance) {
+        return parsedAmount;
+      } else if (isStaking) {
+        return jurorBalance[2] + parsedAmount;
+      } else {
+        return jurorBalance[2] - parsedAmount;
+      }
     }
-  }, [action, jurorBalance, parsedAmount]);
+    return 0n;
+  }, [jurorBalance, parsedAmount, isAllowance, isStaking]);
 
+  const { config: increaseAllowanceConfig } = usePreparePnkIncreaseAllowance({
+    enabled: isAllowance && !isUndefined(klerosCore) && !isUndefined(targetStake) && !isUndefined(allowance),
+    args: [klerosCore?.address, BigInt(targetStake ?? 0) - BigInt(allowance ?? 0)],
+  });
+  const { writeAsync: increaseAllowance } = usePnkIncreaseAllowance(increaseAllowanceConfig);
   const handleAllowance = () => {
-    setIsSending(true);
-    wrapWithToast(
-      pnk.increaseAllowance(klerosCore.address, targetStake!.sub(allowance!))
-    ).finally(() => {
-      setIsSending(false);
-      mutate(undefined, true);
-    });
-  };
-
-  const handleStake = () => {
-    if (typeof id !== "undefined") {
+    if (!isUndefined(increaseAllowance)) {
       setIsSending(true);
-      wrapWithToast(klerosCore.setStake(id, targetStake!))
-        .then(() => {
-          setAmount("");
-        })
-        .finally(() => setIsSending(false));
+      wrapWithToast(async () => await increaseAllowance().then((response) => response.hash), publicClient).finally(
+        () => {
+          setIsSending(false);
+        }
+      );
     }
   };
 
-  const handleWithdraw = () => {
-    if (typeof id !== "undefined") {
+  const { config: setStakeConfig } = usePrepareKlerosCoreSetStake({
+    enabled: !isUndefined(targetStake) && !isUndefined(id) && !isAllowance,
+    args: [BigInt(id ?? 0), targetStake],
+  });
+  const { writeAsync: setStake } = useKlerosCoreSetStake(setStakeConfig);
+  const handleStake = () => {
+    if (typeof setStake !== "undefined") {
       setIsSending(true);
-      wrapWithToast(klerosCore.setStake(id, targetStake!))
-        .then(() => {
-          setAmount("");
-          close();
-        })
-        .finally(() => setIsSending(false));
+      wrapWithToast(async () => await setStake().then((response) => response.hash), publicClient)
+        .then(() => setIsPopupOpen(true))
+        .finally(() => {
+          setIsSending(false);
+        });
     }
   };
 
   const buttonProps = {
     [ActionType.allowance]: {
       text: "Allow PNK",
-      checkDisabled: () => !balance || targetStake!.gt(balance),
+      checkDisabled: () => !balance || targetStake! > balance,
       onClick: handleAllowance,
     },
     [ActionType.stake]: {
@@ -100,25 +121,29 @@ const StakeWithdrawButton: React.FC<IActionButton> = ({
     },
     [ActionType.withdraw]: {
       text: "Withdraw",
-      checkDisabled: () => false,
-      onClick: handleWithdraw,
+      checkDisabled: () => !jurorBalance || parsedAmount > jurorBalance[2],
+      onClick: handleStake,
     },
   };
 
-  const { text, checkDisabled, onClick } =
-    buttonProps[isAllowance ? ActionType.allowance : action];
+  const { text, checkDisabled, onClick } = buttonProps[isAllowance ? ActionType.allowance : action];
   return (
-    <Button
-      text={text}
-      isLoading={isSending}
-      disabled={
-        isSending ||
-        parsedAmount.eq(BigNumber.from(0)) ||
-        !notUndefined(targetStake) ||
-        checkDisabled()
-      }
-      onClick={onClick}
-    />
+    <EnsureChain>
+      <Button
+        text={text}
+        isLoading={isSending}
+        disabled={
+          isSending ||
+          parsedAmount == 0n ||
+          isUndefined(targetStake) ||
+          isUndefined(courtDetails) ||
+          checkDisabled() ||
+          (targetStake !== 0n && targetStake < BigInt(courtDetails.court?.minStake)) ||
+          (isStaking && !isAllowance && isUndefined(setStakeConfig.request))
+        }
+        onClick={onClick}
+      />
+    </EnsureChain>
   );
 };
 

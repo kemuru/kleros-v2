@@ -1,27 +1,26 @@
-import useSWRImmutable from "swr/immutable";
-import { gql } from "graphql-request";
-import { CourtPolicyUriQuery } from "src/graphql/generated";
+import { useQuery } from "@tanstack/react-query";
+import { graphql } from "src/graphql";
+import { graphqlQueryFnHelper } from "utils/graphqlQueryFnHelper";
+import { CourtPolicyUriQuery } from "src/graphql/graphql";
+import { isUndefined } from "utils/index";
 export type { CourtPolicyUriQuery };
 
-const courtPolicyURIQuery = gql`
+const courtPolicyURIQuery = graphql(`
   query CourtPolicyURI($courtID: ID!) {
     court(id: $courtID) {
       policy
     }
   }
-`;
+`);
 
 export const useCourtPolicyURI = (id?: string | number) => {
-  const { data, error, isValidating } = useSWRImmutable(() =>
-    typeof id !== "undefined"
-      ? {
-          query: courtPolicyURIQuery,
-          variables: { courtID: id?.toString() },
-        }
-      : false
-  );
-  const result = data
-    ? (data.court.policy as CourtPolicyUriQuery.court.policy)
-    : undefined;
-  return { data: result, error, isValidating };
+  const isEnabled = !isUndefined(id);
+
+  return useQuery<CourtPolicyUriQuery>({
+    queryKey: [`CourtPolicyURI${id}`],
+    enabled: isEnabled,
+    staleTime: Infinity,
+    queryFn: async () =>
+      isEnabled ? await graphqlQueryFnHelper(courtPolicyURIQuery, { courtID: id.toString() }) : undefined,
+  });
 };

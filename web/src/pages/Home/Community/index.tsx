@@ -1,46 +1,64 @@
 import React from "react";
-import styled from "styled-components";
+import styled, { css } from "styled-components";
+import { landscapeStyle } from "styles/landscapeStyle";
 import { Card } from "@kleros/ui-components-library";
 import { Element } from "./Element";
-import { firstSection, secondSection } from "consts/community-elements";
+import { section } from "consts/community-elements";
+import { responsiveSize } from "styles/responsiveSize";
 
 const Container = styled.div`
-  margin-top: 64px;
+  margin-top: ${responsiveSize(44, 64)};
+
+  h1 {
+    margin-bottom: ${responsiveSize(16, 48)};
+  }
 `;
 
 const StyledCard = styled(Card)`
+  display: flex;
   width: 100%;
   height: auto;
+  gap: 12px;
+  flex-direction: column;
+  flex-wrap: wrap;
+  padding: 24px;
+  align-items: flex-start;
+
+  ${landscapeStyle(
+    () => css`
+      flex-direction: row;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 24px 32px;
+    `
+  )}
 `;
 
-const StyledSeparator = styled.hr`
-  margin: 0;
-`;
-
-const Section = styled.div`
-  width: 100%;
-  padding: 12px;
+const ThreeElementContainer = styled.div`
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 12px;
+
+  ${landscapeStyle(
+    () => css`
+      flex-direction: row;
+      justify-content: space-between;
+      gap: 48px;
+    `
+  )}
 `;
 
 const Community = () => (
   <Container>
     <h1>Community</h1>
     <StyledCard>
-      <Section>
-        {firstSection.map((element, i) => (
-          <Element key={i} {...element} />
+      <ThreeElementContainer>
+        {section.slice(0, 3).map((element) => (
+          <Element key={element.Icon} {...element} />
         ))}
-      </Section>
-      <StyledSeparator />
-      <Section>
-        {secondSection.map((element, i) => (
-          <Element key={i} {...element} />
-        ))}
-      </Section>
+      </ThreeElementContainer>
+      <Element {...section[3]} />
     </StyledCard>
   </Container>
 );

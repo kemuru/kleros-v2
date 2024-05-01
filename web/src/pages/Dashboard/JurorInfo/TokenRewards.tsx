@@ -1,7 +1,7 @@
 import React from "react";
 import styled from "styled-components";
-import _ETH from "assets/svgs/styled/eth.svg";
-import _PNK from "assets/svgs/styled/pnk.svg";
+import GradientTokenIcons from "components/GradientTokenIcons";
+import { StyledSkeleton } from "components/StyledSkeleton";
 
 const RewardContainer = styled.div`
   display: flex;
@@ -10,32 +10,24 @@ const RewardContainer = styled.div`
   gap: 8px;
 `;
 
-const ETH = styled(_ETH)`
-  stroke: ${({ theme }) => theme.secondaryBlue};
-`;
-
-const PNK = styled(_PNK)`
-  stroke: ${({ theme }) => theme.secondaryBlue};
-`;
-
 const StyledH1 = styled.h1`
   margin: 0;
 `;
 
 interface ITokenRewards {
   token: "ETH" | "PNK";
-  amount: string;
-  value: string;
+  amount: string | undefined;
+  value: string | undefined;
 }
 
 const TokenRewards: React.FC<ITokenRewards> = ({ token, amount, value }) => {
   return (
     <RewardContainer>
-      {token === "ETH" ? <ETH /> : <PNK />}
-      <StyledH1>
-        {amount} {token}
-      </StyledH1>
-      <label>$ {value}</label>
+      {token && <GradientTokenIcons icon={token} />}
+      <StyledH1>{amount || <StyledSkeleton width={76} />}</StyledH1>
+      <StyledH1>{token}</StyledH1>
+      <label>$ </label>
+      <label>{value || <StyledSkeleton width={32} />}</label>
     </RewardContainer>
   );
 };

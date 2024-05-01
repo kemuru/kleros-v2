@@ -1,45 +1,35 @@
 // SPDX-License-Identifier: MIT
 
-/**
- *  @authors: [@unknownunknown1, @jaybuidl]
- *  @reviewers: []
- *  @auditors: []
- *  @bounties: []
- *  @deployments: []
- */
+/// @custom:authors: [@unknownunknown1, @jaybuidl]
+/// @custom:reviewers: []
+/// @custom:auditors: []
+/// @custom:bounties: []
+/// @custom:deployments: []
 
-pragma solidity ^0.8;
+pragma solidity 0.8.18;
 
-import "./BaseDisputeKit.sol";
-import "../../rng/RNG.sol";
-import "../../evidence/IEvidence.sol";
+import "../KlerosCore.sol";
+import "../interfaces/IDisputeKit.sol";
+import "../../proxy/UUPSProxiable.sol";
+import "../../proxy/Initializable.sol";
 
 interface IProofOfHumanity {
-    /** @dev Return true if the submission is registered and not expired.
-     *  @param _submissionID The address of the submission.
-     *  @return Whether the submission is registered or not.
-     */
+    /// @dev Return true if the submission is registered and not expired.
+    /// @param _submissionID The address of the submission.
+    /// @return Whether the submission is registered or not.
     function isRegistered(address _submissionID) external view returns (bool);
 }
 
-/**
- *  @title DisputeKitSybilResistant
- *  Dispute kit implementation adapted from DisputeKitClassic
- *  - a drawing system: at most 1 vote per juror registered on Proof of Humanity,
- *  - a vote aggreation system: plurality,
- *  - an incentive system: equal split between coherent votes,
- *  - an appeal system: fund 2 choices only, vote on any choice.
- */
-contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
+/// @title DisputeKitSybilResistant
+/// Dispute kit implementation adapted from DisputeKitClassic
+/// - a drawing system: at most 1 vote per juror registered on Proof of Humanity,
+/// - a vote aggregation system: plurality,
+/// - an incentive system: equal split between coherent votes,
+/// - an appeal system: fund 2 choices only, vote on any choice.
+contract DisputeKitSybilResistant is IDisputeKit, Initializable, UUPSProxiable {
     // ************************************* //
     // *             Structs               * //
     // ************************************* //
-
-    enum Phase {
-        resolving, // No disputes that need drawing.
-        generating, // Waiting for a random number. Pass as soon as it is ready.
-        drawing // Jurors can be drawn.
-    }
 
     struct Dispute {
         Round[] rounds; // Rounds of the dispute. 0 is the default round, and [1, ..n] are the appeal rounds.
@@ -81,24 +71,35 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
     uint256 public constant LOSER_APPEAL_PERIOD_MULTIPLIER = 5000; // Multiplier of the appeal period for the choice that wasn't voted for in the previous round, in basis points. Default is 1/2 of original appeal period.
     uint256 public constant ONE_BASIS_POINT = 10000; // One basis point, for scaling.
 
-    RNG public rng; // The random number generator
-    IProofOfHumanity public poh; // The Proof of Humanity registry
-    uint256 public rngRequestedBlock; // The block number requested to the random number.
-    uint256 public rngLookahead; // Minimum block distance between requesting and obtaining a random number.
-    uint256 public randomNumber; // The current random number.
-    Phase public phase; // Current phase of this dispute kit.
-    uint256 public disputesWithoutJurors; // The number of disputes that have not finished drawing jurors.
+    address public governor; // The governor of the contract.
+    KlerosCore public core; // The Kleros Core arbitrator
     Dispute[] public disputes; // Array of the locally created disputes.
     mapping(uint256 => uint256) public coreDisputeIDToLocal; // Maps the dispute ID in Kleros Core to the local dispute ID.
+    IProofOfHumanity public poh; // The Proof of Humanity registry
 
     // ************************************* //
     // *              Events               * //
     // ************************************* //
 
+    /// @dev To be emitted when a dispute is created.
+    /// @param _coreDisputeID The identifier of the dispute in the Arbitrator contract.
+    /// @param _numberOfChoices The number of choices available in the dispute.
+    /// @param _extraData The extra data for the dispute.
     event DisputeCreation(uint256 indexed _coreDisputeID, uint256 _numberOfChoices, bytes _extraData);
 
-    event CommitCast(uint256 indexed _coreDisputeID, uint256[] _voteIDs, bytes32 _commit);
+    /// @dev To be emitted when a vote commitment is cast.
+    /// @param _coreDisputeID The identifier of the dispute in the Arbitrator contract.
+    /// @param _juror The address of the juror casting the vote commitment.
+    /// @param _voteIDs The identifiers of the votes in the dispute.
+    /// @param _commit The commitment of the juror.
+    event CommitCast(uint256 indexed _coreDisputeID, address indexed _juror, uint256[] _voteIDs, bytes32 _commit);
 
+    /// @dev To be emitted when a funding contribution is made.
+    /// @param _coreDisputeID The identifier of the dispute in the Arbitrator contract.
+    /// @param _coreRoundID The identifier of the round in the Arbitrator contract.
+    /// @param _choice The choice that is being funded.
+    /// @param _contributor The address of the contributor.
+    /// @param _amount The amount contributed.
     event Contribution(
         uint256 indexed _coreDisputeID,
         uint256 indexed _coreRoundID,
@@ -107,6 +108,12 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         uint256 _amount
     );
 
+    /// @dev To be emitted when the contributed funds are withdrawn.
+    /// @param _coreDisputeID The identifier of the dispute in the Arbitrator contract.
+    /// @param _coreRoundID The identifier of the round in the Arbitrator contract.
+    /// @param _choice The choice that is being funded.
+    /// @param _contributor The address of the contributor.
+    /// @param _amount The amount withdrawn.
     event Withdrawal(
         uint256 indexed _coreDisputeID,
         uint256 indexed _coreRoundID,
@@ -115,34 +122,47 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         uint256 _amount
     );
 
+    /// @dev To be emitted when a choice is fully funded for an appeal.
+    /// @param _coreDisputeID The identifier of the dispute in the Arbitrator contract.
+    /// @param _coreRoundID The identifier of the round in the Arbitrator contract.
+    /// @param _choice The choice that is being funded.
     event ChoiceFunded(uint256 indexed _coreDisputeID, uint256 indexed _coreRoundID, uint256 indexed _choice);
-    event NewPhaseDisputeKit(Phase _phase);
 
     // ************************************* //
     // *              Modifiers            * //
     // ************************************* //
+
+    modifier onlyByGovernor() {
+        require(governor == msg.sender, "Access not allowed: Governor only.");
+        _;
+    }
+
+    modifier onlyByCore() {
+        require(address(core) == msg.sender, "Access not allowed: KlerosCore only.");
+        _;
+    }
 
     modifier notJumped(uint256 _coreDisputeID) {
         require(!disputes[coreDisputeIDToLocal[_coreDisputeID]].jumped, "Dispute jumped to a parent DK!");
         _;
     }
 
-    /** @dev Constructor.
-     *  @param _governor The governor's address.
-     *  @param _core The KlerosCore arbitrator.
-     *  @param _rng The random number generator.
-     *  @param _rngLookahead Lookahead value for rng.
-     *  @param _poh ProofOfHumanity contract.
-     */
-    constructor(
-        address _governor,
-        KlerosCore _core,
-        RNG _rng,
-        uint256 _rngLookahead,
-        IProofOfHumanity _poh
-    ) BaseDisputeKit(_governor, _core) {
-        rng = _rng;
-        rngLookahead = _rngLookahead;
+    // ************************************* //
+    // *            Constructor            * //
+    // ************************************* //
+
+    /// @dev Constructor, initializing the implementation to reduce attack surface.
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @dev Initializer.
+    /// @param _governor The governor's address.
+    /// @param _core The KlerosCore arbitrator.
+    /// @param _poh The Proof of Humanity registry.
+    function initialize(address _governor, KlerosCore _core, IProofOfHumanity _poh) external reinitializer(1) {
+        governor = _governor;
+        core = _core;
         poh = _poh;
     }
 
@@ -150,36 +170,41 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
     // *      Governance      * //
     // ************************ //
 
-    /** @dev Changes the `governor` storage variable.
-     *  @param _governor The new value for the `governor` storage variable.
+    /**
+     * @dev Access Control to perform implementation upgrades (UUPS Proxiable)
+     * @dev Only the governor can perform upgrades (`onlyByGovernor`)
      */
+    function _authorizeUpgrade(address) internal view override onlyByGovernor {
+        // NOP
+    }
+
+    /// @dev Allows the governor to call anything on behalf of the contract.
+    /// @param _destination The destination of the call.
+    /// @param _amount The value sent with the call.
+    /// @param _data The data sent with the call.
+    function executeGovernorProposal(
+        address _destination,
+        uint256 _amount,
+        bytes memory _data
+    ) external onlyByGovernor {
+        (bool success, ) = _destination.call{value: _amount}(_data);
+        require(success, "Unsuccessful call");
+    }
+
+    /// @dev Changes the `governor` storage variable.
+    /// @param _governor The new value for the `governor` storage variable.
     function changeGovernor(address payable _governor) external onlyByGovernor {
         governor = _governor;
     }
 
-    /** @dev Changes the `core` storage variable.
-     *  @param _core The new value for the `core` storage variable.
-     */
+    /// @dev Changes the `core` storage variable.
+    /// @param _core The new value for the `core` storage variable.
     function changeCore(address _core) external onlyByGovernor {
         core = KlerosCore(_core);
     }
 
-    /** @dev Changes the `_rng` storage variable.
-     *  @param _rng The new value for the `RNGenerator` storage variable.
-     *  @param _rngLookahead The new value for the `rngLookahead` storage variable.
-     */
-    function changeRandomNumberGenerator(RNG _rng, uint256 _rngLookahead) external onlyByGovernor {
-        rng = _rng;
-        rngLookahead = _rngLookahead;
-        if (phase == Phase.generating) {
-            rngRequestedBlock = block.number + rngLookahead;
-            rng.requestRandomness(rngRequestedBlock);
-        }
-    }
-
-    /** @dev Changes the `poh` storage variable.
-     *  @param _poh The new value for the `poh` storage variable.
-     */
+    /// @dev Changes the `poh` storage variable.
+    /// @param _poh The new value for the `poh` storage variable.
     function changePoh(address _poh) external onlyByGovernor {
         poh = IProofOfHumanity(_poh);
     }
@@ -188,13 +213,12 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
     // *         State Modifiers           * //
     // ************************************* //
 
-    /** @dev Creates a local dispute and maps it to the dispute ID in the Core contract.
-     *  Note: Access restricted to Kleros Core only.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core.
-     *  @param _numberOfChoices Number of choices of the dispute
-     *  @param _extraData Additional info about the dispute, for possible use in future dispute kits.
-     *  @param _nbVotes Number of votes for this dispute.
-     */
+    /// @dev Creates a local dispute and maps it to the dispute ID in the Core contract.
+    /// Note: Access restricted to Kleros Core only.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core.
+    /// @param _numberOfChoices Number of choices of the dispute
+    /// @param _extraData Additional info about the dispute, for possible use in future dispute kits.
+    /// @param _nbVotes Number of votes for this dispute.
     function createDispute(
         uint256 _coreDisputeID,
         uint256 _numberOfChoices,
@@ -214,100 +238,43 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         round.tied = true;
 
         coreDisputeIDToLocal[_coreDisputeID] = localDisputeID;
-        disputesWithoutJurors++;
         emit DisputeCreation(_coreDisputeID, _numberOfChoices, _extraData);
     }
 
-    /** @dev Passes the phase.
-     */
-    function passPhase() external override {
-        if (core.phase() == KlerosCore.Phase.staking || core.freezingPhaseTimeout()) {
-            require(phase != Phase.resolving, "Already in Resolving phase");
-            phase = Phase.resolving; // Safety net.
-        } else if (core.phase() == KlerosCore.Phase.freezing) {
-            if (phase == Phase.resolving) {
-                require(disputesWithoutJurors > 0, "All the disputes have jurors");
-                rngRequestedBlock = core.freezeBlock() + rngLookahead;
-                rng.requestRandomness(rngRequestedBlock);
-                phase = Phase.generating;
-            } else if (phase == Phase.generating) {
-                randomNumber = rng.receiveRandomness(rngRequestedBlock);
-                require(randomNumber != 0, "Random number is not ready yet");
-                phase = Phase.drawing;
-            } else if (phase == Phase.drawing) {
-                require(disputesWithoutJurors == 0, "Not ready for Resolving phase");
-                phase = Phase.resolving;
-            }
-        }
-        // Should not be reached if the phase is unchanged.
-        emit NewPhaseDisputeKit(phase);
-    }
-
-    /** @dev Draws the juror from the sortition tree. The drawn address is picked up by Kleros Core.
-     *  Note: Access restricted to Kleros Core only.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core.
-     *  @return drawnAddress The drawn address.
-     */
+    /// @dev Draws the juror from the sortition tree. The drawn address is picked up by Kleros Core.
+    /// Note: Access restricted to Kleros Core only.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core.
+    /// @param _nonce Nonce of the drawing iteration.
+    /// @return drawnAddress The drawn address.
     function draw(
-        uint256 _coreDisputeID
+        uint256 _coreDisputeID,
+        uint256 _nonce
     ) external override onlyByCore notJumped(_coreDisputeID) returns (address drawnAddress) {
-        require(phase == Phase.drawing, "Should be in drawing phase");
-
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage round = dispute.rounds[dispute.rounds.length - 1];
 
+        ISortitionModule sortitionModule = core.sortitionModule();
         (uint96 courtID, , , , ) = core.disputes(_coreDisputeID);
         bytes32 key = bytes32(uint256(courtID)); // Get the ID of the tree.
 
-        (uint256 K, uint256 nodesLength, ) = core.getSortitionSumTree(key, 0);
-        uint256 treeIndex = 0;
-        uint256 currentDrawnNumber = uint256(
-            keccak256(abi.encodePacked(randomNumber, _coreDisputeID, round.votes.length))
-        );
-        currentDrawnNumber %= core.getSortitionSumTreeNode(key, 0);
-
         // TODO: Handle the situation when no one has staked yet.
+        drawnAddress = sortitionModule.draw(key, _coreDisputeID, _nonce);
 
-        // While it still has children
-        while ((K * treeIndex) + 1 < nodesLength) {
-            for (uint256 i = 1; i <= K; i++) {
-                // Loop over children.
-                uint256 nodeIndex = (K * treeIndex) + i;
-                uint256 nodeValue = core.getSortitionSumTreeNode(key, nodeIndex);
-
-                if (currentDrawnNumber >= nodeValue) {
-                    // Go to the next child.
-                    currentDrawnNumber -= nodeValue;
-                } else {
-                    // Pick this child.
-                    treeIndex = nodeIndex;
-                    break;
-                }
-            }
-        }
-
-        (, , bytes32 ID) = core.getSortitionSumTree(key, treeIndex);
-        drawnAddress = stakePathIDToAccount(ID);
-
-        if (postDrawCheck(_coreDisputeID, drawnAddress) && !round.alreadyDrawn[drawnAddress]) {
+        if (_postDrawCheck(_coreDisputeID, drawnAddress) && !round.alreadyDrawn[drawnAddress]) {
             round.votes.push(Vote({account: drawnAddress, commit: bytes32(0), choice: 0, voted: false}));
             round.alreadyDrawn[drawnAddress] = true;
-            if (round.votes.length == round.nbVotes) {
-                disputesWithoutJurors--;
-            }
         } else {
             drawnAddress = address(0);
         }
     }
 
-    /** @dev Sets the caller's commit for the specified votes. It can be called multiple times during the
-     *  commit period, each call overrides the commits of the previous one.
-     *  `O(n)` where
-     *  `n` is the number of votes.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core.
-     *  @param _voteIDs The IDs of the votes.
-     *  @param _commit The commit. Note that justification string is a part of the commit.
-     */
+    /// @dev Sets the caller's commit for the specified votes. It can be called multiple times during the
+    /// commit period, each call overrides the commits of the previous one.
+    /// `O(n)` where
+    /// `n` is the number of votes.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core.
+    /// @param _voteIDs The IDs of the votes.
+    /// @param _commit The commit. Note that justification string is a part of the commit.
     function castCommit(
         uint256 _coreDisputeID,
         uint256[] calldata _voteIDs,
@@ -324,18 +291,17 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
             round.votes[_voteIDs[i]].commit = _commit;
         }
         round.totalCommitted += _voteIDs.length;
-        emit CommitCast(_coreDisputeID, _voteIDs, _commit);
+        emit CommitCast(_coreDisputeID, msg.sender, _voteIDs, _commit);
     }
 
-    /** @dev Sets the caller's choices for the specified votes.
-     *  `O(n)` where
-     *  `n` is the number of votes.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core.
-     *  @param _voteIDs The IDs of the votes.
-     *  @param _choice The choice.
-     *  @param _salt The salt for the commit if the votes were hidden.
-     *  @param _justification Justification of the choice.
-     */
+    /// @dev Sets the caller's choices for the specified votes.
+    /// `O(n)` where
+    /// `n` is the number of votes.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core.
+    /// @param _voteIDs The IDs of the votes.
+    /// @param _choice The choice.
+    /// @param _salt The salt for the commit if the votes were hidden.
+    /// @param _justification Justification of the choice.
     function castVote(
         uint256 _coreDisputeID,
         uint256[] calldata _voteIDs,
@@ -352,14 +318,13 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
 
         Round storage round = dispute.rounds[dispute.rounds.length - 1];
         (uint96 courtID, , , , ) = core.disputes(_coreDisputeID);
-        (, bool hiddenVotes, , , , ) = core.courts(courtID);
+        (, bool hiddenVotes, , , , , ) = core.courts(courtID);
 
         //  Save the votes.
         for (uint256 i = 0; i < _voteIDs.length; i++) {
             require(round.votes[_voteIDs[i]].account == msg.sender, "The caller has to own the vote.");
             require(
-                !hiddenVotes ||
-                    round.votes[_voteIDs[i]].commit == keccak256(abi.encodePacked(_choice, _justification, _salt)),
+                !hiddenVotes || round.votes[_voteIDs[i]].commit == keccak256(abi.encodePacked(_choice, _salt)),
                 "The commit must match the choice in courts with hidden votes."
             );
             require(!round.votes[_voteIDs[i]].voted, "Vote already cast.");
@@ -383,14 +348,13 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
                 round.tied = false;
             }
         }
-        emit Justification(_coreDisputeID, msg.sender, _choice, _justification);
+        emit VoteCast(_coreDisputeID, msg.sender, _voteIDs, _choice, _justification);
     }
 
-    /** @dev Manages contributions, and appeals a dispute if at least two choices are fully funded.
-     *  Note that the surplus deposit will be reimbursed.
-     *  @param _coreDisputeID Index of the dispute in Kleros Core.
-     *  @param _choice A choice that receives funding.
-     */
+    /// @dev Manages contributions, and appeals a dispute if at least two choices are fully funded.
+    /// Note that the surplus deposit will be reimbursed.
+    /// @param _coreDisputeID Index of the dispute in Kleros Core.
+    /// @param _choice A choice that receives funding.
     function fundAppeal(uint256 _coreDisputeID, uint256 _choice) external payable notJumped(_coreDisputeID) {
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         require(_choice <= dispute.numberOfChoices, "There is no such ruling to fund.");
@@ -450,7 +414,6 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
                 Round storage newRound = dispute.rounds.push();
                 newRound.nbVotes = core.getNumberOfVotes(_coreDisputeID);
                 newRound.tied = true;
-                disputesWithoutJurors++;
             }
             core.appeal{value: appealCost}(_coreDisputeID, dispute.numberOfChoices, dispute.extraData);
         }
@@ -458,13 +421,12 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         if (msg.value > contribution) payable(msg.sender).send(msg.value - contribution);
     }
 
-    /** @dev Allows those contributors who attempted to fund an appeal round to withdraw any reimbursable fees or rewards after the dispute gets resolved.
-     *  @param _coreDisputeID Index of the dispute in Kleros Core contract.
-     *  @param _beneficiary The address whose rewards to withdraw.
-     *  @param _coreRoundID The round in the Kleros Core contract the caller wants to withdraw from.
-     *  @param _choice The ruling option that the caller wants to withdraw from.
-     *  @return amount The withdrawn amount.
-     */
+    /// @dev Allows those contributors who attempted to fund an appeal round to withdraw any reimbursable fees or rewards after the dispute gets resolved.
+    /// @param _coreDisputeID Index of the dispute in Kleros Core contract.
+    /// @param _beneficiary The address whose rewards to withdraw.
+    /// @param _coreRoundID The round in the Kleros Core contract the caller wants to withdraw from.
+    /// @param _choice The ruling option that the caller wants to withdraw from.
+    /// @return amount The withdrawn amount.
     function withdrawFeesAndRewards(
         uint256 _coreDisputeID,
         address payable _beneficiary,
@@ -503,14 +465,6 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         }
     }
 
-    /** @dev Submits evidence.
-     *  @param _evidenceGroupID Unique identifier of the evidence group the evidence belongs to. It's the submitter responsability to submit the right evidence group ID.
-     *  @param _evidence IPFS path to evidence, example: '/ipfs/Qmarwkf7C9RuzDEJNnarT3WZ7kem5bk8DZAzx78acJjMFH/evidence.json'.
-     */
-    function submitEvidence(uint256 _evidenceGroupID, string calldata _evidence) external {
-        emit Evidence(_evidenceGroupID, msg.sender, _evidence);
-    }
-
     // ************************************* //
     // *           Public Views            * //
     // ************************************* //
@@ -521,12 +475,11 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         return lastRound.fundedChoices;
     }
 
-    /** @dev Gets the current ruling of a specified dispute.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core.
-     *  @return ruling The current ruling.
-     *  @return tied Whether it's a tie or not.
-     *  @return overridden Whether the ruling was overridden by appeal funding or not.
-     */
+    /// @dev Gets the current ruling of a specified dispute.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core.
+    /// @return ruling The current ruling.
+    /// @return tied Whether it's a tie or not.
+    /// @return overridden Whether the ruling was overridden by appeal funding or not.
     function currentRuling(
         uint256 _coreDisputeID
     ) external view override returns (uint256 ruling, bool tied, bool overridden) {
@@ -546,12 +499,11 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         }
     }
 
-    /** @dev Gets the degree of coherence of a particular voter. This function is called by Kleros Core in order to determine the amount of the reward.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core, not in the Dispute Kit.
-     *  @param _coreRoundID The ID of the round in Kleros Core, not in the Dispute Kit.
-     *  @param _voteID The ID of the vote.
-     *  @return The degree of coherence in basis points.
-     */
+    /// @dev Gets the degree of coherence of a particular voter. This function is called by Kleros Core in order to determine the amount of the reward.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core, not in the Dispute Kit.
+    /// @param _coreRoundID The ID of the round in Kleros Core, not in the Dispute Kit.
+    /// @param _voteID The ID of the vote.
+    /// @return The degree of coherence in basis points.
     function getDegreeOfCoherence(
         uint256 _coreDisputeID,
         uint256 _coreRoundID,
@@ -569,11 +521,10 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         }
     }
 
-    /** @dev Gets the number of jurors who are eligible to a reward in this round.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core, not in the Dispute Kit.
-     *  @param _coreRoundID The ID of the round in Kleros Core, not in the Dispute Kit.
-     *  @return The number of coherent jurors.
-     */
+    /// @dev Gets the number of jurors who are eligible to a reward in this round.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core, not in the Dispute Kit.
+    /// @param _coreRoundID The ID of the round in Kleros Core, not in the Dispute Kit.
+    /// @return The number of coherent jurors.
     function getCoherentCount(uint256 _coreDisputeID, uint256 _coreRoundID) external view override returns (uint256) {
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage currentRound = dispute.rounds[dispute.coreRoundIDToLocal[_coreRoundID]];
@@ -588,32 +539,29 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         }
     }
 
-    /** @dev Returns true if all of the jurors have cast their commits for the last round.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core.
-     *  @return Whether all of the jurors have cast their commits for the last round.
-     */
+    /// @dev Returns true if all of the jurors have cast their commits for the last round.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core.
+    /// @return Whether all of the jurors have cast their commits for the last round.
     function areCommitsAllCast(uint256 _coreDisputeID) external view override returns (bool) {
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage round = dispute.rounds[dispute.rounds.length - 1];
         return round.totalCommitted == round.votes.length;
     }
 
-    /** @dev Returns true if all of the jurors have cast their votes for the last round.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core.
-     *  @return Whether all of the jurors have cast their votes for the last round.
-     */
+    /// @dev Returns true if all of the jurors have cast their votes for the last round.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core.
+    /// @return Whether all of the jurors have cast their votes for the last round.
     function areVotesAllCast(uint256 _coreDisputeID) external view override returns (bool) {
         Dispute storage dispute = disputes[coreDisputeIDToLocal[_coreDisputeID]];
         Round storage round = dispute.rounds[dispute.rounds.length - 1];
         return round.totalVoted == round.votes.length;
     }
 
-    /** @dev Returns true if the specified voter was active in this round.
-     *  @param _coreDisputeID The ID of the dispute in Kleros Core, not in the Dispute Kit.
-     *  @param _coreRoundID The ID of the round in Kleros Core, not in the Dispute Kit.
-     *  @param _voteID The ID of the voter.
-     *  @return Whether the voter was active or not.
-     */
+    /// @dev Returns true if the specified voter was active in this round.
+    /// @param _coreDisputeID The ID of the dispute in Kleros Core, not in the Dispute Kit.
+    /// @param _coreRoundID The ID of the round in Kleros Core, not in the Dispute Kit.
+    /// @param _voteID The ID of the voter.
+    /// @return Whether the voter was active or not.
     function isVoteActive(
         uint256 _coreDisputeID,
         uint256 _coreRoundID,
@@ -663,58 +611,31 @@ contract DisputeKitSybilResistant is BaseDisputeKit, IEvidence {
         return (vote.account, vote.commit, vote.choice, vote.voted);
     }
 
-    function isResolving() external view override returns (bool) {
-        return phase == Phase.resolving;
-    }
-
     // ************************************* //
     // *            Internal               * //
     // ************************************* //
 
-    /** @dev Checks that the chosen address satisfies certain conditions for being drawn.
-     *  @param _coreDisputeID ID of the dispute in the core contract.
-     *  @param _juror Chosen address.
-     *  @return Whether the address can be drawn or not.
-     */
-    function postDrawCheck(uint256 _coreDisputeID, address _juror) internal view override returns (bool) {
+    /// @dev Checks that the chosen address satisfies certain conditions for being drawn.
+    /// @param _coreDisputeID ID of the dispute in the core contract.
+    /// @param _juror Chosen address.
+    /// @return Whether the address can be drawn or not.
+    function _postDrawCheck(uint256 _coreDisputeID, address _juror) internal view returns (bool) {
         (uint96 courtID, , , , ) = core.disputes(_coreDisputeID);
-        (uint256 lockedAmountPerJuror, , , , , ) = core.getRoundInfo(
-            _coreDisputeID,
-            core.getNumberOfRounds(_coreDisputeID) - 1
-        );
-        (uint256 stakedTokens, uint256 lockedTokens) = core.getJurorBalance(_juror, courtID);
-        (, , uint256 minStake, , , ) = core.courts(courtID);
-        if (stakedTokens < lockedTokens + lockedAmountPerJuror || stakedTokens < minStake) {
+        uint256 lockedAmountPerJuror = core
+            .getRoundInfo(_coreDisputeID, core.getNumberOfRounds(_coreDisputeID) - 1)
+            .pnkAtStakePerJuror;
+        (uint256 totalStaked, uint256 totalLocked, , ) = core.sortitionModule().getJurorBalance(_juror, courtID);
+        if (totalStaked < totalLocked + lockedAmountPerJuror) {
             return false;
         } else {
-            return proofOfHumanity(_juror);
+            return _proofOfHumanity(_juror);
         }
     }
 
-    /** @dev Checks if an address belongs to the Proof of Humanity registry.
-     *  @param _address The address to check.
-     *  @return registered True if registered.
-     */
-    function proofOfHumanity(address _address) internal view returns (bool) {
+    /// @dev Checks if an address belongs to the Proof of Humanity registry.
+    /// @param _address The address to check.
+    /// @return registered True if registered.
+    function _proofOfHumanity(address _address) internal view returns (bool) {
         return poh.isRegistered(_address);
-    }
-
-    /** @dev Retrieves a juror's address from the stake path ID.
-     *  @param _stakePathID The stake path ID to unpack.
-     *  @return account The account.
-     */
-    function stakePathIDToAccount(bytes32 _stakePathID) internal pure returns (address account) {
-        assembly {
-            // solium-disable-line security/no-inline-assembly
-            let ptr := mload(0x40)
-            for {
-                let i := 0x00
-            } lt(i, 0x14) {
-                i := add(i, 0x01)
-            } {
-                mstore8(add(add(ptr, 0x0c), i), byte(i, _stakePathID))
-            }
-            account := mload(ptr)
-        }
     }
 }

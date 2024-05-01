@@ -6,38 +6,48 @@ const FieldWrapper = styled.div`
   gap: 8px;
 `;
 
-const Field: React.FC<{ label: string; value: string }> = ({
-  label,
-  value,
-}) => (
+const SeparatorLabel = styled.label`
+  margin: 0 8px;
+  color: ${({ theme }) => theme.primaryText};
+`;
+
+const StyledLabel = styled.label`
+  color: ${({ theme }) => theme.primaryText};
+`;
+
+const Field: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <FieldWrapper>
-    <label>{label}</label>
+    <StyledLabel>{label}</StyledLabel>
     <small>{value}</small>
   </FieldWrapper>
 );
 
-const SeparatorLabel = styled.label`
-  margin-left: 8px;
-  margin-right: 8px;
-`;
-
 const Separator: React.FC = () => <SeparatorLabel>|</SeparatorLabel>;
 
-const fields = [
-  { label: "Total", value: "600" },
-  { label: "In Progress", value: "50" },
-  { label: "Closed", value: "550" },
-];
+export interface IStats {
+  totalDisputes: number;
+  closedDisputes: number;
+}
 
-const Stats: React.FC = () => (
-  <div>
-    {fields.map(({ label, value }, i) => (
-      <React.Fragment key={i}>
-        <Field {...{ label, value }} />
-        {i + 1 < fields.length ? <Separator /> : null}
-      </React.Fragment>
-    ))}
-  </div>
-);
+const Stats: React.FC<IStats> = ({ totalDisputes, closedDisputes }) => {
+  const inProgressDisputes = (totalDisputes - closedDisputes).toString();
+
+  const fields = [
+    { label: "Total", value: totalDisputes.toString() },
+    { label: "In Progress", value: inProgressDisputes },
+    { label: "Closed", value: closedDisputes.toString() },
+  ];
+
+  return (
+    <div>
+      {fields.map(({ label, value }, i) => (
+        <React.Fragment key={i}>
+          <Field {...{ label, value }} />
+          {i + 1 < fields.length ? <Separator /> : null}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
 
 export default Stats;

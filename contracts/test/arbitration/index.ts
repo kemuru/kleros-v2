@@ -1,13 +1,7 @@
 import { expect } from "chai";
-import { ethers } from "hardhat";
+import { deployments, ethers } from "hardhat";
 import { BigNumber } from "ethers";
-
-const ONE_ETH = BigNumber.from(10).pow(18);
-const WINNER_STAKE_MULTIPLIER = 3000;
-const LOSER_STAKE_MULTIPLIER = 7000;
-const MULTIPLIER_DENOMINATOR = 10000;
-
-const RNG_LOOKAHEAD = 20;
+import { KlerosCore, DisputeKitClassic } from "../../typechain-types";
 
 describe("DisputeKitClassic", async () => {
   // eslint-disable-next-line no-unused-vars
@@ -24,7 +18,6 @@ describe("DisputeKitClassic", async () => {
     expect(events.length).to.equal(1);
     expect(events[0].args._disputeKitID).to.equal(1);
     expect(events[0].args._disputeKitAddress).to.equal(disputeKit.address);
-    expect(events[0].args._parent).to.equal(0);
 
     // Reminder: the Forking court will be added which will break these expectations.
     events = await core.queryFilter(core.filters.CourtCreated());
@@ -32,17 +25,11 @@ describe("DisputeKitClassic", async () => {
     expect(events[0].args._courtID).to.equal(1);
     expect(events[0].args._parent).to.equal(0);
     expect(events[0].args._hiddenVotes).to.equal(false);
-    expect(events[0].args._minStake).to.equal(200);
+    expect(events[0].args._minStake).to.equal(ethers.utils.parseUnits("200", 18));
     expect(events[0].args._alpha).to.equal(10000);
-    expect(events[0].args._feeForJuror).to.equal(100);
-    expect(events[0].args._jurorsForCourtJump).to.equal(3);
-    expect(events[0].args._timesPerPeriod).to.deep.equal([
-      ethers.constants.Zero,
-      ethers.constants.Zero,
-      ethers.constants.Zero,
-      ethers.constants.Zero,
-    ]);
-    expect(events[0].args._sortitionSumTreeK).to.equal(3);
+    expect(events[0].args._feeForJuror).to.equal(ethers.utils.parseUnits("0.1", 18));
+    expect(events[0].args._jurorsForCourtJump).to.equal(256);
+    expect(events[0].args._timesPerPeriod).to.deep.equal([0, 0, 0, 10]);
     expect(events[0].args._supportedDisputeKits).to.deep.equal([]);
 
     events = await core.queryFilter(core.filters.DisputeKitEnabled());
@@ -57,7 +44,9 @@ describe("DisputeKitClassic", async () => {
       "Access not allowed: KlerosCore only."
     );
 
-    const tx = await core.connect(deployer).createDispute(2, "0x00", { value: 1000 });
+    const tx = await core
+      .connect(deployer)
+      .functions["createDispute(uint256,bytes)"](2, "0x00", { value: ethers.utils.parseEther("0.3") });
     expect(tx).to.emit(core, "DisputeCreation").withArgs(0, deployer.address);
     expect(tx).to.emit(disputeKit, "DisputeCreation").withArgs(0, 2, "0x00");
 
@@ -72,42 +61,11 @@ describe("DisputeKitClassic", async () => {
 });
 
 async function deployContracts(deployer) {
-  const rngFactory = await ethers.getContractFactory("BlockHashRNG", deployer);
-  const rng = await rngFactory.deploy();
-  await rng.deployed();
-
-  const disputeKitFactory = await ethers.getContractFactory("DisputeKitClassic", deployer);
-  const disputeKit = await disputeKitFactory.deploy(
-    deployer.address,
-    ethers.constants.AddressZero, // KlerosCore is set later once it is deployed
-    rng.address,
-    RNG_LOOKAHEAD
-  );
-  await disputeKit.deployed();
-
-  const sortitionSumTreeLibraryFactory = await ethers.getContractFactory("SortitionSumTreeFactoryV2", deployer);
-  const library = await sortitionSumTreeLibraryFactory.deploy();
-
-  const klerosCoreFactory = await ethers.getContractFactory("KlerosCore", {
-    signer: deployer,
-    libraries: {
-      SortitionSumTreeFactoryV2: library.address,
-    },
+  await deployments.fixture(["Arbitration", "VeaMock"], {
+    fallbackToGlobal: true,
+    keepExistingDeployments: false,
   });
-  const core = await klerosCoreFactory.deploy(
-    deployer.address,
-    ethers.constants.AddressZero, // should be an ERC20
-    ethers.constants.AddressZero, // should be a Juror Prosecution module
-    disputeKit.address,
-    [120, 120], // minStakingTime, maxFreezingTime
-    false,
-    [200, 10000, 100, 3],
-    [0, 0, 0, 0],
-    3
-  );
-  await core.deployed();
-
-  await disputeKit.changeCore(core.address);
-
+  const disputeKit = (await ethers.getContract("DisputeKitClassic")) as DisputeKitClassic;
+  const core = (await ethers.getContract("KlerosCore")) as KlerosCore;
   return [core, disputeKit];
 }

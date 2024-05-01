@@ -1,30 +1,34 @@
 import React from "react";
 import styled from "styled-components";
+import LatestCases from "components/LatestCases";
 import CourtOverview from "./CourtOverview";
-import LatestCases from "./LatestCases";
 import Community from "./Community";
+import HeroImage from "components/HeroImage";
 import { HomePageProvider } from "hooks/useHomePageContext";
+import { getOneYearAgoTimestamp } from "utils/date";
+import TopJurors from "./TopJurors";
+import { responsiveSize } from "styles/responsiveSize";
 
 const Container = styled.div`
   width: 100%;
-  min-height: calc(100vh - 144px);
   background-color: ${({ theme }) => theme.lightBackground};
-  padding: 32px;
+  padding: ${responsiveSize(32, 72)} ${responsiveSize(24, 132)} ${responsiveSize(76, 96)};
+  max-width: 1780px;
+  margin: 0 auto;
 `;
 
-const getOneYearAgoTimestamp: () => number = () => {
-  const currentTime = new Date().getTime() / 1000;
-  return currentTime - 31556926; // One year in seconds
+const Home: React.FC = () => {
+  return (
+    <HomePageProvider timeframe={getOneYearAgoTimestamp()}>
+      <HeroImage />
+      <Container>
+        <CourtOverview />
+        <LatestCases />
+        <TopJurors />
+        <Community />
+      </Container>
+    </HomePageProvider>
+  );
 };
-
-const Home: React.FC = () => (
-  <HomePageProvider timeframe={getOneYearAgoTimestamp()}>
-    <Container>
-      <CourtOverview />
-      <LatestCases />
-      <Community />
-    </Container>
-  </HomePageProvider>
-);
 
 export default Home;

@@ -2,11 +2,13 @@ import React, { useState } from "react";
 import styled from "styled-components";
 import TimeSeriesChart from "./TimeSeriesChart";
 import { DropdownSelect } from "@kleros/ui-components-library";
-import { utils } from "ethers";
+import { StyledSkeleton } from "components/StyledSkeleton";
+import { formatUnits } from "viem";
 import { useHomePageContext } from "hooks/useHomePageContext";
+import { responsiveSize } from "styles/responsiveSize";
 
 const Container = styled.div`
-  margin-bottom: 32px;
+  margin-bottom: ${responsiveSize(32, 48)};
   display: flex;
   flex-direction: column;
 `;
@@ -31,8 +33,10 @@ const ChartOptionsDropdown: React.FC<{
     alignRight
     defaultValue={"stakedPNK"}
     items={CHART_OPTIONS}
-    callback={(newValue: string) => {
-      setChartOption(newValue);
+    callback={(newValue: string | number) => {
+      if (typeof newValue === "string") {
+        setChartOption(newValue);
+      }
     }}
   />
 );
@@ -51,11 +55,7 @@ const Chart: React.FC = () => {
       ...accData,
       {
         x: Number(counter.id) * 1000,
-        y: Number(
-          chartOption === "stakedPNK"
-            ? utils.formatUnits(counter[chartOption], 18)
-            : counter[chartOption]
-        ),
+        y: Number(chartOption === "stakedPNK" ? formatUnits(counter[chartOption], 18) : counter[chartOption]),
       },
     ];
   }, []);
@@ -63,7 +63,7 @@ const Chart: React.FC = () => {
   return (
     <Container>
       <ChartOptionsDropdown {...{ setChartOption }} />
-      {processedData ? <TimeSeriesChart data={processedData} /> : "Fetching..."}
+      {processedData ? <TimeSeriesChart data={processedData} /> : <StyledSkeleton height={233} />}
     </Container>
   );
 };

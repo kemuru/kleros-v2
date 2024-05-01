@@ -1,12 +1,8 @@
 import { parseUnits, parseEther } from "ethers/lib/utils";
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
-
-enum ForeignChains {
-  GNOSIS_MAINNET = 100,
-  GNOSIS_CHIADO = 10200,
-  HARDHAT = 31337,
-}
+import disputeTemplate from "../test/fixtures/DisputeTemplate.simple.json";
+import { ForeignChains, isSkipped } from "./utils";
 
 const wrappedPNKByChain = new Map<ForeignChains, string>([
   [ForeignChains.GNOSIS_MAINNET, "0xcb3231aBA3b451343e0Fddfc45883c842f223846"],
@@ -21,7 +17,7 @@ const deployKlerosLiquid: DeployFunction = async (hre: HardhatRuntimeEnvironment
   // fallback to hardhat node signers on local network
   const deployer = (await getNamedAccounts()).deployer ?? (await hre.ethers.getSigners())[0].address;
   const chainId = Number(await getChainId());
-  console.log("Deploying to chainId %s with deployer %s", chainId, deployer);
+  console.log("deploying to chainId %s with deployer %s", chainId, deployer);
 
   if (!wrappedPNKByChain.get(chainId)) {
     const wPnk = await deploy("WrappedPinakionV2", {
@@ -53,14 +49,11 @@ const deployKlerosLiquid: DeployFunction = async (hre: HardhatRuntimeEnvironment
   const jurorsForCourtJump = 9999999;
   const sortitionSumTreeK = 3;
   const foreignGateway = await deployments.get("ForeignGatewayOnGnosis");
+  const extraData =
+    "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000003"; // General court, 3 jurors
   const weth = await deployments.get("WETH");
 
-  console.log(
-    "Using: \nwPNK at %s, \nForeignGateway at %s, \nWETH at %s",
-    wPnkAddress,
-    foreignGateway.address,
-    weth.address
-  );
+  console.log("using: \nwPNK at %s, \nForeignGateway at %s", wPnkAddress, foreignGateway.address, weth.address);
 
   const sortitionSumTreeLibrary = await deploy("SortitionSumTreeFactory", {
     from: deployer,
@@ -97,36 +90,26 @@ const deployKlerosLiquid: DeployFunction = async (hre: HardhatRuntimeEnvironment
     [minStake, alpha, feeForJuror, jurorsForCourtJump], // minStake, alpha, feeForJuror, jurorsForCourtJump
     [0, 0, 0, 0], // evidencePeriod, commitPeriod, votePeriod, appealPeriod
     sortitionSumTreeK,
-    foreignGateway.address,
-    weth.address
+    foreignGateway.address
   );
 
   // const xKlerosLiquidV2 = await deployments.get("xKlerosLiquidV2");
+  const disputeTemplateRegistry = await deployments.get("DisputeTemplateRegistry");
   await deploy("ArbitrableExample", {
     from: deployer,
     args: [
       xKlerosLiquidV2.address,
       0,
-      "/ipfs/bafkreifteme6tusnjwyzajk75fyvzdmtyycxctf7yhfijb6rfigz3n4lvq", // PoH registration
+      disputeTemplate,
+      "disputeTemplateMapping: TODO",
+      extraData,
+      disputeTemplateRegistry.address,
       weth.address,
     ],
     log: true,
     maxFeePerGas: ONE_GWEI,
     maxPriorityFeePerGas: ONE_GWEI,
   });
-
-  await execute(
-    "ArbitrableExample",
-    {
-      from: deployer,
-      log: true,
-      maxFeePerGas: ONE_GWEI,
-      maxPriorityFeePerGas: ONE_GWEI,
-    },
-    "changeMetaEvidence",
-    1,
-    "/ipfs/bafkreibiuxwejijwg4pxco7fqszawcwmpt26itbdxeqgh7cvpeuwtmlhoa" // PoH clearing
-  );
 };
 
 // TODO: mock deployment on the hardhat network
@@ -140,8 +123,6 @@ const deployKlerosLiquid: DeployFunction = async (hre: HardhatRuntimeEnvironment
 // ]);
 // const hardhatDeployer = () => {
 //   // TODO: deploy mocks for xPinakion and tokenBridge for Hardhat network
-//   const wEth = await deployments.get("WETH");
-//   const wEth = wethByChain[chainId];
 //   // const xPnk = await deployments.get("WPNK");
 //   const xPnk = xPinakionByChain[chainId];
 //   const tokenBridge = tokenBridgeByChain[chainId];
@@ -162,9 +143,8 @@ const deployKlerosLiquid: DeployFunction = async (hre: HardhatRuntimeEnvironment
 // };
 
 deployKlerosLiquid.tags = ["KlerosLiquidOnGnosis"];
-deployKlerosLiquid.skip = async ({ getChainId }) => {
-  const chainId = Number(await getChainId());
-  return !ForeignChains[chainId];
+deployKlerosLiquid.skip = async ({ network }) => {
+  return isSkipped(network, !ForeignChains[network.config.chainId ?? 0]);
 };
 
 export default deployKlerosLiquid;

@@ -1,15 +1,19 @@
 import React from "react";
-import styled, { useTheme } from "styled-components";
-
-const createPair = (iconColor: string, backgroundColor: string) => ({
-  iconColor,
-  backgroundColor,
-});
+import { landscapeStyle } from "styles/landscapeStyle";
+import styled, { useTheme, css } from "styled-components";
+import { responsiveSize } from "styles/responsiveSize";
 
 const Container = styled.div`
   display: flex;
+  max-width: 196px;
   align-items: center;
   gap: 8px;
+
+  ${landscapeStyle(
+    () => css`
+      margin-bottom: ${responsiveSize(16, 30)};
+    `
+  )}
 `;
 
 const SVGContainer = styled.div<{ iconColor: string; backgroundColor: string }>`
@@ -20,11 +24,10 @@ const SVGContainer = styled.div<{ iconColor: string; backgroundColor: string }>`
   display: flex;
   align-items: center;
   justify-content: center;
-
   svg {
     fill: ${({ iconColor }) => iconColor};
-    max-height: 22px;
-    max-width: 22px;
+    height: ${({ iconColor, theme }) => (iconColor === theme.success ? "24px" : "32px")};
+    width: ${({ iconColor, theme }) => (iconColor === theme.success ? "24px" : "32px")};
   }
 `;
 
@@ -34,22 +37,20 @@ const TextContainer = styled.div`
   }
 `;
 
+const createPair = (iconColor: string, backgroundColor: string) => ({
+  iconColor,
+  backgroundColor,
+});
+
 export interface IStatDisplay {
   title: string;
-  text: string;
-  subtext: string;
+  text: string | React.ReactNode;
+  subtext: string | React.ReactNode;
   icon: React.FunctionComponent<React.SVGAttributes<SVGElement>>;
   color: "red" | "orange" | "green" | "blue" | "purple";
 }
 
-const StatDisplay: React.FC<IStatDisplay> = ({
-  title,
-  text,
-  subtext,
-  icon: Icon,
-  color,
-  ...props
-}) => {
+const StatDisplay: React.FC<IStatDisplay> = ({ title, text, subtext, icon: Icon, color, ...props }) => {
   const theme = useTheme();
   const COLORS = {
     red: createPair(theme.error, theme.errorLight),
@@ -58,6 +59,7 @@ const StatDisplay: React.FC<IStatDisplay> = ({
     blue: createPair(theme.primaryBlue, theme.mediumBlue),
     purple: createPair(theme.secondaryPurple, theme.mediumPurple),
   };
+
   return (
     <Container {...props}>
       <SVGContainer {...{ ...COLORS[color] }}>{<Icon />}</SVGContainer>

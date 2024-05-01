@@ -2,7 +2,8 @@ import React from "react";
 import styled from "styled-components";
 import { Box as _Box, Button } from "@kleros/ui-components-library";
 import TokenRewards from "./TokenRewards";
-import WithHelpTooltip from "../WithHelpTooltip";
+import WithHelpTooltip from "components/WithHelpTooltip";
+import { EnsureChain } from "components/EnsureChain";
 
 const Container = styled.div`
   display: flex;
@@ -33,7 +34,9 @@ const ClaimPNK: React.FC = () => {
         <label> Unclaimed: </label>
         <small> 1,000 PNK </small>
       </UnclaimedContainer>
-      <Button small variant="tertiary" text="Claim" />
+      <EnsureChain>
+        <Button small variant="tertiary" text="Claim" />
+      </EnsureChain>
     </Box>
   );
 };

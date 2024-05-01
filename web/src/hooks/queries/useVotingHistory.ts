@@ -1,45 +1,46 @@
-import useSWR from "swr";
-import { gql } from "graphql-request";
-import { VotingHistoryQuery } from "src/graphql/generated";
+import { graphql } from "src/graphql";
+import { VotingHistoryQuery } from "src/graphql/graphql";
+import { useQuery } from "@tanstack/react-query";
+import { graphqlQueryFnHelper } from "utils/graphqlQueryFnHelper";
 export type { VotingHistoryQuery };
 
-const votingHistoryQuery = gql`
+const votingHistoryQuery = graphql(`
   query VotingHistory($disputeID: ID!) {
     dispute(id: $disputeID) {
       id
       rounds {
         nbVotes
+        court {
+          id
+          name
+        }
       }
       disputeKitDispute {
         localRounds {
           ... on ClassicRound {
+            winningChoice
             totalVoted
-            votes {
+            justifications {
               id
               juror {
                 id
               }
-              ... on ClassicVote {
-                choice
-                justification
-              }
+              choice
+              reference
             }
           }
         }
       }
     }
   }
-`;
+`);
 
 export const useVotingHistory = (disputeID?: string) => {
-  const { data, error, isValidating } = useSWR(() =>
-    typeof disputeID !== "undefined"
-      ? {
-          query: votingHistoryQuery,
-          variables: { disputeID },
-        }
-      : false
-  );
-  const result = data ? (data as VotingHistoryQuery) : undefined;
-  return { data: result, error, isValidating };
+  const isEnabled = disputeID !== undefined;
+
+  return useQuery<VotingHistoryQuery>({
+    queryKey: ["refetchOnBlock", `VotingHistory${disputeID}`],
+    enabled: isEnabled,
+    queryFn: async () => await graphqlQueryFnHelper(votingHistoryQuery, { disputeID }),
+  });
 };

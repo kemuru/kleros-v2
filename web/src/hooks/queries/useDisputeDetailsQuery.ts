@@ -1,9 +1,10 @@
-import useSWR from "swr";
-import { gql } from "graphql-request";
-import { DisputeDetailsQuery } from "src/graphql/generated";
+import { graphql } from "src/graphql";
+import { DisputeDetailsQuery } from "src/graphql/graphql";
+import { useQuery } from "@tanstack/react-query";
+import { graphqlQueryFnHelper } from "utils/graphqlQueryFnHelper";
 export type { DisputeDetailsQuery };
 
-const disputeDetailsQuery = gql`
+const disputeDetailsQuery = graphql(`
   query DisputeDetails($disputeID: ID!) {
     dispute(id: $disputeID) {
       court {
@@ -18,19 +19,23 @@ const disputeDetailsQuery = gql`
       period
       ruled
       lastPeriodChange
+      currentRuling
+      overridden
+      tied
+      currentRound {
+        id
+      }
+      currentRoundIndex
     }
   }
-`;
+`);
 
 export const useDisputeDetailsQuery = (id?: string | number) => {
-  const { data, error, isValidating } = useSWR(() =>
-    typeof id !== "undefined"
-      ? {
-          query: disputeDetailsQuery,
-          variables: { disputeID: id?.toString() },
-        }
-      : false
-  );
-  const result = data ? (data as DisputeDetailsQuery) : undefined;
-  return { data: result, error, isValidating };
+  const isEnabled = id !== undefined;
+
+  return useQuery({
+    queryKey: ["refetchOnBlock", `disputeDetailsQuery${id}`],
+    enabled: isEnabled,
+    queryFn: async () => await graphqlQueryFnHelper(disputeDetailsQuery, { disputeID: id?.toString() }),
+  });
 };

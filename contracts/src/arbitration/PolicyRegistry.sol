@@ -1,22 +1,20 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8;
+pragma solidity 0.8.18;
 
-/**
- *  @title PolicyRegistry
- *  @author Enrique Piqueras - <epiquerass@gmail.com>
- *  @dev A contract to maintain a policy for each court.
- */
-contract PolicyRegistry {
+import "../proxy/UUPSProxiable.sol";
+import "../proxy/Initializable.sol";
+
+/// @title PolicyRegistry
+/// @dev A contract to maintain a policy for each court.
+contract PolicyRegistry is UUPSProxiable, Initializable {
     // ************************************* //
     // *              Events               * //
     // ************************************* //
 
-    /**
-     *  @dev Emitted when a policy is updated.
-     *  @param _courtID The ID of the policy's court.
-     *  @param _courtName The name of the policy's court.
-     *  @param _policy The URI of the policy JSON.
-     */
+    /// @dev Emitted when a policy is updated.
+    /// @param _courtID The ID of the policy's court.
+    /// @param _courtName The name of the policy's court.
+    /// @param _policy The URI of the policy JSON.
     event PolicyUpdate(uint256 indexed _courtID, string _courtName, string _policy);
 
     // ************************************* //
@@ -30,9 +28,7 @@ contract PolicyRegistry {
     // *        Function Modifiers         * //
     // ************************************* //
 
-    /**
-     *  @dev Requires that the sender is the governor.
-     */
+    /// @dev Requires that the sender is the governor.
     modifier onlyByGovernor() {
         require(governor == msg.sender, "No allowed: governor only");
         _;
@@ -42,10 +38,14 @@ contract PolicyRegistry {
     // *            Constructor            * //
     // ************************************* //
 
-    /** @dev Constructs the `PolicyRegistry` contract.
-     *  @param _governor The governor's address.
-     */
-    constructor(address _governor) {
+    /// @dev Constructor, initializing the implementation to reduce attack surface.
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @dev Constructs the `PolicyRegistry` contract.
+    /// @param _governor The governor's address.
+    function initialize(address _governor) external reinitializer(1) {
         governor = _governor;
     }
 
@@ -54,9 +54,15 @@ contract PolicyRegistry {
     // ************************************* //
 
     /**
-     *  @dev Changes the `governor` storage variable.
-     *  @param _governor The new value for the `governor` storage variable.
+     * @dev Access Control to perform implementation upgrades (UUPS Proxiable)
+     * @dev Only the governor can perform upgrades (`onlyByGovernor`)
      */
+    function _authorizeUpgrade(address) internal view override onlyByGovernor {
+        // NOP
+    }
+
+    /// @dev Changes the `governor` storage variable.
+    /// @param _governor The new value for the `governor` storage variable.
     function changeGovernor(address _governor) external onlyByGovernor {
         governor = _governor;
     }
@@ -65,12 +71,10 @@ contract PolicyRegistry {
     // *         State Modifiers           * //
     // ************************************* //
 
-    /**
-     *  @dev Sets the policy for the specified court.
-     *  @param _courtID The ID of the specified court.
-     *  @param _courtName The name of the specified court.
-     *  @param _policy The URI of the policy JSON.
-     */
+    /// @dev Sets the policy for the specified court.
+    /// @param _courtID The ID of the specified court.
+    /// @param _courtName The name of the specified court.
+    /// @param _policy The URI of the policy JSON.
     function setPolicy(uint256 _courtID, string calldata _courtName, string calldata _policy) external onlyByGovernor {
         policies[_courtID] = _policy;
         emit PolicyUpdate(_courtID, _courtName, policies[_courtID]);

@@ -1,30 +1,30 @@
-import useSWRImmutable from "swr/immutable";
-import { BigNumber } from "ethers";
-import { useConnectedContract } from "hooks/useConnectedContract";
+import { useQuery } from "@tanstack/react-query";
+import { getDisputeKitClassic } from "hooks/contracts/generated";
+import { isUndefined } from "utils/index";
 
 export const useDisputeKitClassicMultipliers = () => {
-  const disputeKitClassic = useConnectedContract("DisputeKitClassic");
-  return useSWRImmutable(
-    () => (disputeKitClassic ? `Multipliers` : false),
-    async () => {
+  const disputeKitClassic = getDisputeKitClassic({});
+  const isEnabled = !isUndefined(disputeKitClassic);
+  return useQuery({
+    queryKey: [`DisputeKitClassicMultipliers`],
+    enabled: isEnabled,
+    staleTime: Infinity,
+    queryFn: async () => {
       if (!disputeKitClassic) return;
-      const winner_stake_multiplier =
-        await disputeKitClassic.WINNER_STAKE_MULTIPLIER();
-      const loser_stake_multiplier =
-        await disputeKitClassic.LOSER_STAKE_MULTIPLIER();
-      const loser_appeal_period_multiplier =
-        await disputeKitClassic.LOSER_APPEAL_PERIOD_MULTIPLIER();
+      const winner_stake_multiplier = await disputeKitClassic.read.WINNER_STAKE_MULTIPLIER();
+      const loser_stake_multiplier = await disputeKitClassic.read.LOSER_STAKE_MULTIPLIER();
+      const loser_appeal_period_multiplier = await disputeKitClassic.read.LOSER_APPEAL_PERIOD_MULTIPLIER();
       return {
         winner_stake_multiplier,
         loser_stake_multiplier,
         loser_appeal_period_multiplier,
       };
-    }
-  );
+    },
+  });
 };
 
 export interface IDisputeKitClassicMultipliers {
-  winner_stake_multiplier: BigNumber;
-  loser_stake_multiplier: BigNumber;
-  loser_appeal_period_multiplier: BigNumber;
+  winner_stake_multiplier: bigint;
+  loser_stake_multiplier: bigint;
+  loser_appeal_period_multiplier: bigint;
 }

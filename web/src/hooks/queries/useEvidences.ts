@@ -1,15 +1,12 @@
-import useSWR from "swr";
-import { gql } from "graphql-request";
-import { EvidencesQuery } from "src/graphql/generated";
+import { graphql } from "src/graphql";
+import { EvidencesQuery } from "src/graphql/graphql";
+import { useQuery } from "@tanstack/react-query";
+import { graphqlQueryFnHelper } from "utils/graphqlQueryFnHelper";
 export type { EvidencesQuery };
 
-const evidencesQuery = gql`
-  query Evidences($evidenceGroup: String) {
-    evidences(
-      where: { evidenceGroup: $evidenceGroup }
-      orderBy: id
-      orderDirection: asc
-    ) {
+const evidencesQuery = graphql(`
+  query Evidences($evidenceGroupID: String) {
+    evidences(where: { evidenceGroup: $evidenceGroupID }, orderBy: id, orderDirection: asc) {
       id
       evidence
       sender {
@@ -17,17 +14,14 @@ const evidencesQuery = gql`
       }
     }
   }
-`;
+`);
 
 export const useEvidences = (evidenceGroup?: string) => {
-  const { data, error, isValidating } = useSWR(() =>
-    typeof evidenceGroup !== "undefined"
-      ? {
-          query: evidencesQuery,
-          variables: { evidenceGroup: evidenceGroup },
-        }
-      : false
-  );
-  const result = data ? (data as EvidencesQuery) : undefined;
-  return { data: result, error, isValidating };
+  const isEnabled = evidenceGroup !== undefined;
+
+  return useQuery({
+    queryKey: ["refetchOnBlock", `evidencesQuery${evidenceGroup}`],
+    enabled: isEnabled,
+    queryFn: async () => await graphqlQueryFnHelper(evidencesQuery, { evidenceGroupID: evidenceGroup?.toString() }),
+  });
 };

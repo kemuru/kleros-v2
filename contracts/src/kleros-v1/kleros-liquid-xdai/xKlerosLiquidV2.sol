@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8;
+pragma solidity 0.8.18;
 
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IArbitrator, IArbitrable} from "../../arbitration/IArbitrator.sol";
+import {IArbitratorV2, IArbitrableV2} from "../../arbitration/interfaces/IArbitratorV2.sol";
 import {ITokenController} from "../interfaces/ITokenController.sol";
 import {WrappedPinakion} from "./WrappedPinakion.sol";
 import {IRandomAuRa} from "./interfaces/IRandomAuRa.sol";
@@ -12,14 +12,14 @@ import {IRandomAuRa} from "./interfaces/IRandomAuRa.sol";
 import {SortitionSumTreeFactory} from "../../libraries/SortitionSumTreeFactory.sol";
 import "../../gateway/interfaces/IForeignGateway.sol";
 
-/**
- *  @title xKlerosLiquidV2
- *  @dev This contract is an adaption of Mainnet's KlerosLiquid (https://github.com/kleros/kleros/blob/69cfbfb2128c29f1625b3a99a3183540772fda08/contracts/kleros/KlerosLiquid.sol)
- *  for xDai chain. Notice that variables referring to ETH values in this contract, will hold the native token values of the chain on which xKlerosLiquid is deployed.
- *  When this contract gets deployed on xDai chain, ETH variables will hold xDai values.
- */
-contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
-    /* Enums */
+/// @title xKlerosLiquidV2
+/// @dev This contract is an adaption of Mainnet's KlerosLiquid (https://github.com/kleros/kleros/blob/69cfbfb2128c29f1625b3a99a3183540772fda08/contracts/kleros/KlerosLiquid.sol)
+/// for xDai chain. Notice that variables referring to ETH values in this contract, will hold the native token values of the chain on which xKlerosLiquid is deployed.
+/// When this contract gets deployed on xDai chain, ETH variables will hold xDai values.
+contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitratorV2 {
+    // ************************************* //
+    // *         Enums / Structs           * //
+    // ************************************* //
 
     // General
     enum Phase {
@@ -36,8 +36,6 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         appeal, // The dispute can be appealed.
         execution // Tokens are redistributed and the ruling is executed.
     }
-
-    /* Structs */
 
     // General
     struct Court {
@@ -73,7 +71,7 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
     struct Dispute {
         // Note that appeal `0` is equivalent to the first round of the dispute.
         uint96 subcourtID; // The ID of the subcourt the dispute is in.
-        IArbitrable arbitrated; // The arbitrated arbitrable contract.
+        IArbitrableV2 arbitrated; // The arbitrated arbitrable contract.
         // The number of choices jurors have when voting. This does not include choice `0` which is reserved for "refuse to arbitrate"/"no ruling".
         uint256 numberOfChoices;
         Period period; // The current period of the dispute.
@@ -100,48 +98,47 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         uint256 lockedTokens; // The juror's total amount of tokens locked in disputes.
     }
 
-    /* Events */
+    // ************************************* //
+    // *              Events               * //
+    // ************************************* //
 
-    /** @dev Emitted when we pass to a new phase.
-     *  @param _phase The new phase.
-     */
+    /// @dev Emitted when we pass to a new phase.
+    /// @param _phase The new phase.
     event NewPhase(Phase _phase);
 
-    /** @dev Emitted when a dispute passes to a new period.
-     *  @param _disputeID The ID of the dispute.
-     *  @param _period The new period.
-     */
+    /// @dev Emitted when a dispute passes to a new period.
+    /// @param _disputeID The ID of the dispute.
+    /// @param _period The new period.
     event NewPeriod(uint256 indexed _disputeID, Period _period);
 
-    /** @dev Emitted when a juror's stake is set.
-     *  @param _address The address of the juror.
-     *  @param _subcourtID The ID of the subcourt at the end of the stake path.
-     *  @param _stake The new stake.
-     *  @param _newTotalStake The new total stake.
-     */
+    /// @dev Emitted when a juror's stake is set.
+    /// @param _address The address of the juror.
+    /// @param _subcourtID The ID of the subcourt at the end of the stake path.
+    /// @param _stake The new stake.
+    /// @param _newTotalStake The new total stake.
     event StakeSet(address indexed _address, uint256 _subcourtID, uint128 _stake, uint256 _newTotalStake);
 
-    /** @dev Emitted when a juror is drawn.
-     *  @param _address The drawn address.
-     *  @param _disputeID The ID of the dispute.
-     *  @param _appeal The appeal the draw is for. 0 is for the first round.
-     *  @param _voteID The vote ID.
-     */
+    /// @dev Emitted when a juror is drawn.
+    /// @param _address The drawn address.
+    /// @param _disputeID The ID of the dispute.
+    /// @param _appeal The appeal the draw is for. 0 is for the first round.
+    /// @param _voteID The vote ID.
     event Draw(address indexed _address, uint256 indexed _disputeID, uint256 _appeal, uint256 _voteID);
 
-    /** @dev Emitted when a juror wins or loses tokens and ETH from a dispute.
-     *  @param _address The juror affected.
-     *  @param _disputeID The ID of the dispute.
-     *  @param _tokenAmount The amount of tokens won or lost.
-     *  @param _ETHAmount The amount of ETH won or lost.
-     */
+    /// @dev Emitted when a juror wins or loses tokens and ETH from a dispute.
+    /// @param _address The juror affected.
+    /// @param _disputeID The ID of the dispute.
+    /// @param _tokenAmount The amount of tokens won or lost.
+    /// @param _ETHAmount The amount of ETH won or lost.
     event TokenAndETHShift(address indexed _address, uint256 indexed _disputeID, int _tokenAmount, int _ETHAmount);
 
-    /* Storage */
+    // ************************************* //
+    // *             Storage               * //
+    // ************************************* //
 
     // General Constants
     uint256 public constant MAX_STAKE_PATHS = 4; // The maximum number of stake paths a juror can have.
-    uint256 public constant MIN_JURORS = 3; // The global default minimum number of jurors in a dispute.
+    uint256 public constant DEFAULT_NB_OF_JURORS = 3; // The default number of jurors in a dispute.
     uint256 public constant NON_PAYABLE_AMOUNT = (2 ** 256 - 2) / 2; // An amount higher than the supply of ETH.
     uint256 public constant ALPHA_DIVISOR = 1e4; // The number to divide `Court.alpha` by.
     // General Contracts
@@ -178,50 +175,49 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
     mapping(address => Juror) public jurors; // The jurors.
 
     IForeignGateway public foreignGateway; // Foreign gateway contract.
-    IERC20 public weth; // WETH token address.
 
     mapping(uint256 => uint256) public disputesRuling;
 
-    /* Modifiers */
+    // ************************************* //
+    // *        Function Modifiers         * //
+    // ************************************* //
 
-    /** @dev Requires a specific phase.
-     *  @param _phase The required phase.
-     */
+    /// @dev Requires a specific phase.
+    /// @param _phase The required phase.
     modifier onlyDuringPhase(Phase _phase) {
         require(phase == _phase);
         _;
     }
 
-    /** @dev Requires a specific period in a dispute.
-     *  @param _disputeID The ID of the dispute.
-     *  @param _period The required period.
-     */
+    /// @dev Requires a specific period in a dispute.
+    /// @param _disputeID The ID of the dispute.
+    /// @param _period The required period.
     modifier onlyDuringPeriod(uint256 _disputeID, Period _period) {
         require(disputes[_disputeID].period == _period);
         _;
     }
 
-    /** @dev Requires that the sender is the governor. Note that the governor is expected to not be malicious. */
+    /// @dev Requires that the sender is the governor. Note that the governor is expected to not be malicious.
     modifier onlyByGovernor() {
         require(governor == msg.sender);
         _;
     }
 
-    /* Constructor */
+    // ************************************* //
+    // *            Constructor            * //
+    // ************************************* //
 
-    /** @dev Constructs the KlerosLiquid contract.
-     *  @param _governor The governor's address.
-     *  @param _pinakion The address of the token contract.
-     *  @param _RNGenerator The address of the random number generator contract.
-     *  @param _minStakingTime The minimum time that the staking phase should last.
-     *  @param _maxDrawingTime The maximum time that the drawing phase should last.
-     *  @param _hiddenVotes The `hiddenVotes` property value of the general court.
-     *  @param _courtParameters MinStake, alpha, feeForJuror and jurorsForCourtJump respectively.
-     *  @param _timesPerPeriod The `timesPerPeriod` property value of the general court.
-     *  @param _sortitionSumTreeK The number of children per node of the general court's sortition sum tree.
-     *  @param _foreignGateway Foreign gateway on xDai.
-     *  @param _weth Weth contract.
-     */
+    /// @dev Constructs the KlerosLiquid contract.
+    /// @param _governor The governor's address.
+    /// @param _pinakion The address of the token contract.
+    /// @param _RNGenerator The address of the random number generator contract.
+    /// @param _minStakingTime The minimum time that the staking phase should last.
+    /// @param _maxDrawingTime The maximum time that the drawing phase should last.
+    /// @param _hiddenVotes The `hiddenVotes` property value of the general court.
+    /// @param _courtParameters MinStake, alpha, feeForJuror and jurorsForCourtJump respectively.
+    /// @param _timesPerPeriod The `timesPerPeriod` property value of the general court.
+    /// @param _sortitionSumTreeK The number of children per node of the general court's sortition sum tree.
+    /// @param _foreignGateway Foreign gateway on xDai.
     function initialize(
         address _governor,
         WrappedPinakion _pinakion,
@@ -232,8 +228,7 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         uint256[4] memory _courtParameters,
         uint256[4] memory _timesPerPeriod,
         uint256 _sortitionSumTreeK,
-        IForeignGateway _foreignGateway,
-        IERC20 _weth
+        IForeignGateway _foreignGateway
     ) public initializer {
         // Initialize contract.
         governor = _governor;
@@ -246,7 +241,6 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         lockInsolventTransfers = true;
         if (nextDelayedSetStake == 0) nextDelayedSetStake = 1;
         foreignGateway = _foreignGateway;
-        weth = _weth;
 
         // Create the general court.
         if (courts.length == 0) {
@@ -266,13 +260,14 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         }
     }
 
-    /* External */
+    // ************************************* //
+    // *             Governance            * //
+    // ************************************* //
 
-    /** @dev Lets the governor call anything on behalf of the contract.
-     *  @param _destination The destination of the call.
-     *  @param _amount The value sent with the call.
-     *  @param _data The data sent with the call.
-     */
+    /// @dev Lets the governor call anything on behalf of the contract.
+    /// @param _destination The destination of the call.
+    /// @param _amount The value sent with the call.
+    /// @param _data The data sent with the call.
     function executeGovernorProposal(
         address _destination,
         uint256 _amount,
@@ -282,23 +277,20 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         require(success, "Unsuccessful call");
     }
 
-    /** @dev Changes the `governor` storage variable.
-     *  @param _governor The new value for the `governor` storage variable.
-     */
+    /// @dev Changes the `governor` storage variable.
+    /// @param _governor The new value for the `governor` storage variable.
     function changeGovernor(address _governor) external onlyByGovernor {
         governor = _governor;
     }
 
-    /** @dev Changes the `pinakion` storage variable.
-     *  @param _pinakion The new value for the `pinakion` storage variable.
-     */
+    /// @dev Changes the `pinakion` storage variable.
+    /// @param _pinakion The new value for the `pinakion` storage variable.
     function changePinakion(WrappedPinakion _pinakion) external onlyByGovernor {
         pinakion = _pinakion;
     }
 
-    /** @dev Changes the `RNGenerator` storage variable.
-     *  @param _RNGenerator The new value for the `RNGenerator` storage variable.
-     */
+    /// @dev Changes the `RNGenerator` storage variable.
+    /// @param _RNGenerator The new value for the `RNGenerator` storage variable.
     function changeRNGenerator(IRandomAuRa _RNGenerator) external onlyByGovernor {
         RNGenerator = _RNGenerator;
         if (phase == Phase.generating) {
@@ -306,44 +298,33 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         }
     }
 
-    /** @dev Changes the `minStakingTime` storage variable.
-     *  @param _minStakingTime The new value for the `minStakingTime` storage variable.
-     */
+    /// @dev Changes the `minStakingTime` storage variable.
+    /// @param _minStakingTime The new value for the `minStakingTime` storage variable.
     function changeMinStakingTime(uint256 _minStakingTime) external onlyByGovernor {
         minStakingTime = _minStakingTime;
     }
 
-    /** @dev Changes the `maxDrawingTime` storage variable.
-     *  @param _maxDrawingTime The new value for the `maxDrawingTime` storage variable.
-     */
+    /// @dev Changes the `maxDrawingTime` storage variable.
+    /// @param _maxDrawingTime The new value for the `maxDrawingTime` storage variable.
     function changeMaxDrawingTime(uint256 _maxDrawingTime) external onlyByGovernor {
         maxDrawingTime = _maxDrawingTime;
     }
 
-    /** @dev Changes the `foreignGateway` storage variable.
-     *  @param _foreignGateway The new value for the `foreignGateway` storage variable.
-     */
+    /// @dev Changes the `foreignGateway` storage variable.
+    /// @param _foreignGateway The new value for the `foreignGateway` storage variable.
     function changeForeignGateway(IForeignGateway _foreignGateway) external onlyByGovernor {
         foreignGateway = _foreignGateway;
     }
 
-    /** @dev Changes the `weth` storage variable.
-     *  @param _weth The new value for the `weth` storage variable.
-     */
-    function changeWethAddress(IERC20 _weth) external onlyByGovernor {
-        weth = _weth;
-    }
-
-    /** @dev Creates a subcourt under a specified parent court.
-     *  @param _parent The `parent` property value of the subcourt.
-     *  @param _hiddenVotes The `hiddenVotes` property value of the subcourt.
-     *  @param _minStake The `minStake` property value of the subcourt.
-     *  @param _alpha The `alpha` property value of the subcourt.
-     *  @param _feeForJuror The `feeForJuror` property value of the subcourt.
-     *  @param _jurorsForCourtJump The `jurorsForCourtJump` property value of the subcourt.
-     *  @param _timesPerPeriod The `timesPerPeriod` property value of the subcourt.
-     *  @param _sortitionSumTreeK The number of children per node of the subcourt's sortition sum tree.
-     */
+    /// @dev Creates a subcourt under a specified parent court.
+    /// @param _parent The `parent` property value of the subcourt.
+    /// @param _hiddenVotes The `hiddenVotes` property value of the subcourt.
+    /// @param _minStake The `minStake` property value of the subcourt.
+    /// @param _alpha The `alpha` property value of the subcourt.
+    /// @param _feeForJuror The `feeForJuror` property value of the subcourt.
+    /// @param _jurorsForCourtJump The `jurorsForCourtJump` property value of the subcourt.
+    /// @param _timesPerPeriod The `timesPerPeriod` property value of the subcourt.
+    /// @param _sortitionSumTreeK The number of children per node of the subcourt's sortition sum tree.
     function createSubcourt(
         uint96 _parent,
         bool _hiddenVotes,
@@ -376,10 +357,9 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         courts[_parent].children.push(subcourtID);
     }
 
-    /** @dev Changes the `minStake` property value of a specified subcourt. Don't set to a value lower than its parent's `minStake` property value.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @param _minStake The new value for the `minStake` property value.
-     */
+    /// @dev Changes the `minStake` property value of a specified subcourt. Don't set to a value lower than its parent's `minStake` property value.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @param _minStake The new value for the `minStake` property value.
     function changeSubcourtMinStake(uint96 _subcourtID, uint256 _minStake) external onlyByGovernor {
         require(_subcourtID == 0 || courts[courts[_subcourtID].parent].minStake <= _minStake);
         for (uint256 i = 0; i < courts[_subcourtID].children.length; i++) {
@@ -392,34 +372,30 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         courts[_subcourtID].minStake = _minStake;
     }
 
-    /** @dev Changes the `alpha` property value of a specified subcourt.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @param _alpha The new value for the `alpha` property value.
-     */
+    /// @dev Changes the `alpha` property value of a specified subcourt.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @param _alpha The new value for the `alpha` property value.
     function changeSubcourtAlpha(uint96 _subcourtID, uint256 _alpha) external onlyByGovernor {
         courts[_subcourtID].alpha = _alpha;
     }
 
-    /** @dev Changes the `feeForJuror` property value of a specified subcourt.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @param _feeForJuror The new value for the `feeForJuror` property value.
-     */
+    /// @dev Changes the `feeForJuror` property value of a specified subcourt.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @param _feeForJuror The new value for the `feeForJuror` property value.
     function changeSubcourtJurorFee(uint96 _subcourtID, uint256 _feeForJuror) external onlyByGovernor {
         courts[_subcourtID].feeForJuror = _feeForJuror;
     }
 
-    /** @dev Changes the `jurorsForCourtJump` property value of a specified subcourt.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @param _jurorsForCourtJump The new value for the `jurorsForCourtJump` property value.
-     */
+    /// @dev Changes the `jurorsForCourtJump` property value of a specified subcourt.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @param _jurorsForCourtJump The new value for the `jurorsForCourtJump` property value.
     function changeSubcourtJurorsForJump(uint96 _subcourtID, uint256 _jurorsForCourtJump) external onlyByGovernor {
         courts[_subcourtID].jurorsForCourtJump = _jurorsForCourtJump;
     }
 
-    /** @dev Changes the `timesPerPeriod` property value of a specified subcourt.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @param _timesPerPeriod The new value for the `timesPerPeriod` property value.
-     */
+    /// @dev Changes the `timesPerPeriod` property value of a specified subcourt.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @param _timesPerPeriod The new value for the `timesPerPeriod` property value.
     function changeSubcourtTimesPerPeriod(
         uint96 _subcourtID,
         uint256[4] memory _timesPerPeriod
@@ -427,18 +403,20 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         courts[_subcourtID].timesPerPeriod = _timesPerPeriod;
     }
 
-    /** @dev Sets the caller's stake in a subcourt.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @param _stake The new stake.
-     */
+    // ************************************* //
+    // *         State Modifiers           * //
+    // ************************************* //
+
+    /// @dev Sets the caller's stake in a subcourt.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @param _stake The new stake.
     function setStake(uint96 _subcourtID, uint128 _stake) external {
         require(_setStake(msg.sender, _subcourtID, _stake));
     }
 
-    /** @dev Executes the next delayed set stakes.
-     *  `O(n)` where `n` is the number of iterations to run.
-     *  @param _iterations The number of delayed set stakes to execute.
-     */
+    /// @dev Executes the next delayed set stakes.
+    /// `O(n)` where `n` is the number of iterations to run.
+    /// @param _iterations The number of delayed set stakes to execute.
     function executeDelayedSetStakes(uint256 _iterations) external onlyDuringPhase(Phase.staking) {
         uint256 actualIterations = (nextDelayedSetStake + _iterations) - 1 > lastDelayedSetStake
             ? (lastDelayedSetStake - nextDelayedSetStake) + 1
@@ -453,10 +431,9 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         nextDelayedSetStake = newNextDelayedSetStake;
     }
 
-    /** @dev Receive the ruling from foreign gateway which technically is an arbitrator of this contract.
-     *  @param _disputeID ID of the dispute.
-     *  @param _ruling Ruling given by V2 court and relayed by foreign gateway.
-     */
+    /// @dev Receive the ruling from foreign gateway which technically is an arbitrator of this contract.
+    /// @param _disputeID ID of the dispute.
+    /// @param _ruling Ruling given by V2 court and relayed by foreign gateway.
     function rule(uint256 _disputeID, uint256 _ruling) external {
         require(_disputeID < totalDisputes, "Dispute ID does not exist.");
         require(msg.sender == address(foreignGateway), "Can only be called by gateway");
@@ -472,49 +449,52 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         emit Ruling(dispute.arbitrated, _disputeID, _ruling);
     }
 
-    /* Public */
+    /// Public
 
-    /** @dev Creates a dispute. Must be called by the arbitrable contract.
-     *  @param _numberOfChoices Number of choices to choose from in the dispute to be created.
-     *  @param _extraData Additional info about the dispute to be created. We use it to pass the ID of the subcourt to create the dispute in (first 32 bytes) and the minimum number of jurors required (next 32 bytes).
-     *  @return disputeID The ID of the created dispute.
-     */
+    /// @dev Creates a dispute. Must be called by the arbitrable contract.
+    /// @param _numberOfChoices Number of choices to choose from in the dispute to be created.
+    /// @param _extraData Additional info about the dispute to be created. We use it to pass the ID of the subcourt to create the dispute in (first 32 bytes) and the minimum number of jurors required (next 32 bytes).
+    /// @return disputeID The ID of the created dispute.
     function createDispute(
         uint256 _numberOfChoices,
         bytes memory _extraData
     ) public payable override returns (uint256 disputeID) {
-        require(msg.value == 0, "Fees should be paid in WETH");
-        uint256 fee = arbitrationCost(_extraData);
-        require(weth.transferFrom(msg.sender, address(this), fee), "Not enough WETH for arbitration");
+        require(msg.value >= arbitrationCost(_extraData), "Arbitration fees: not enough");
 
         disputeID = totalDisputes++;
         Dispute storage dispute = disputes[disputeID];
-        dispute.arbitrated = IArbitrable(msg.sender);
+        dispute.arbitrated = IArbitrableV2(msg.sender);
 
         // The V2 subcourtID is off by one
         (uint96 subcourtID, uint256 minJurors) = extraDataToSubcourtIDAndMinJurors(_extraData);
         bytes memory extraDataV2 = abi.encode(uint256(subcourtID + 1), minJurors);
 
-        require(weth.transfer(address(foreignGateway), fee), "Fee transfer to gateway failed");
-        foreignGateway.createDisputeERC20(_numberOfChoices, extraDataV2, fee);
-
-        emit DisputeCreation(disputeID, IArbitrable(msg.sender));
+        foreignGateway.createDispute{value: msg.value}(_numberOfChoices, extraDataV2);
+        emit DisputeCreation(disputeID, IArbitrableV2(msg.sender));
     }
 
-    /** @dev DEPRECATED. Called when `_owner` sends ETH to the Wrapped Token contract.
-     *  @param _owner The address that sent the ETH to create tokens.
-     *  @return allowed Whether the operation should be allowed or not.
-     */
+    /// @inheritdoc IArbitratorV2
+    function createDispute(
+        uint256 /*_choices*/,
+        bytes calldata /*_extraData*/,
+        IERC20 /*_feeToken*/,
+        uint256 /*_feeAmount*/
+    ) external override returns (uint256) {
+        revert("Not supported");
+    }
+
+    /// @dev DEPRECATED. Called when `_owner` sends ETH to the Wrapped Token contract.
+    /// @param _owner The address that sent the ETH to create tokens.
+    /// @return allowed Whether the operation should be allowed or not.
     function proxyPayment(address _owner) public payable override returns (bool allowed) {
         allowed = false;
     }
 
-    /** @dev Notifies the controller about a token transfer allowing the controller to react if desired.
-     *  @param _from The origin of the transfer.
-     *  @param _to The destination of the transfer.
-     *  @param _amount The amount of the transfer.
-     *  @return allowed Whether the operation should be allowed or not.
-     */
+    /// @dev Notifies the controller about a token transfer allowing the controller to react if desired.
+    /// @param _from The origin of the transfer.
+    /// @param _to The destination of the transfer.
+    /// @param _amount The amount of the transfer.
+    /// @return allowed Whether the operation should be allowed or not.
     function onTransfer(address _from, address _to, uint256 _amount) public override returns (bool allowed) {
         if (lockInsolventTransfers) {
             // Never block penalties or rewards.
@@ -524,54 +504,29 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         allowed = true;
     }
 
-    /** @dev Notifies the controller about an approval allowing the controller to react if desired.
-     *  @param _owner The address that calls `approve()`.
-     *  @param _spender The spender in the `approve()` call.
-     *  @param _amount The amount in the `approve()` call.
-     *  @return allowed Whether the operation should be allowed or not.
-     */
+    /// @dev Notifies the controller about an approval allowing the controller to react if desired.
+    /// @param _owner The address that calls `approve()`.
+    /// @param _spender The spender in the `approve()` call.
+    /// @param _amount The amount in the `approve()` call.
+    /// @return allowed Whether the operation should be allowed or not.
     function onApprove(address _owner, address _spender, uint256 _amount) public override returns (bool allowed) {
         allowed = true;
     }
 
-    /* Public Views */
+    // ************************************* //
+    // *            Internal               * //
+    // ************************************* //
 
-    /** @dev Gets the cost of arbitration in a specified subcourt.
-     *  @param _extraData Additional info about the dispute. We use it to pass the ID of the subcourt to create the dispute in (first 32 bytes) and the minimum number of jurors required (next 32 bytes).
-     *  @return cost The cost.
-     */
-    function arbitrationCost(bytes memory _extraData) public view override returns (uint256 cost) {
-        cost = foreignGateway.arbitrationCost(_extraData);
-    }
-
-    /** @dev Gets the current ruling of a specified dispute.
-     *  @param _disputeID The ID of the dispute.
-     *  @return ruling The current ruling.
-     */
-    function currentRuling(uint256 _disputeID) public view returns (uint256 ruling) {
-        Dispute storage dispute = disputes[_disputeID];
-        if (dispute.voteCounters.length == 0) {
-            ruling = disputesRuling[_disputeID];
-        } else {
-            ruling = dispute.voteCounters[dispute.voteCounters.length - 1].tied
-                ? 0
-                : dispute.voteCounters[dispute.voteCounters.length - 1].winningChoice;
-        }
-    }
-
-    /* Internal */
-
-    /** @dev Sets the specified juror's stake in a subcourt.
-     *  `O(n + p * log_k(j))` where
-     *  `n` is the number of subcourts the juror has staked in,
-     *  `p` is the depth of the subcourt tree,
-     *  `k` is the minimum number of children per node of one of these subcourts' sortition sum tree,
-     *  and `j` is the maximum number of jurors that ever staked in one of these subcourts simultaneously.
-     *  @param _account The address of the juror.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @param _stake The new stake.
-     *  @return succeeded True if the call succeeded, false otherwise.
-     */
+    /// @dev Sets the specified juror's stake in a subcourt.
+    /// `O(n + p * log_k(j))` where
+    /// `n` is the number of subcourts the juror has staked in,
+    /// `p` is the depth of the subcourt tree,
+    /// `k` is the minimum number of children per node of one of these subcourts' sortition sum tree,
+    /// and `j` is the maximum number of jurors that ever staked in one of these subcourts simultaneously.
+    /// @param _account The address of the juror.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @param _stake The new stake.
+    /// @return succeeded True if the call succeeded, false otherwise.
     function _setStake(address _account, uint96 _subcourtID, uint128 _stake) internal returns (bool succeeded) {
         if (!(_subcourtID < courts.length)) return false;
 
@@ -606,11 +561,10 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         return true;
     }
 
-    /** @dev Gets a subcourt ID and the minimum number of jurors required from a specified extra data bytes array.
-     *  @param _extraData The extra data bytes array. The first 32 bytes are the subcourt ID and the next 32 bytes are the minimum number of jurors.
-     *  @return subcourtID The subcourt ID.
-     *  @return minJurors The minimum number of jurors required.
-     */
+    /// @dev Gets a subcourt ID and the minimum number of jurors required from a specified extra data bytes array.
+    /// @param _extraData The extra data bytes array. The first 32 bytes are the subcourt ID and the next 32 bytes are the minimum number of jurors.
+    /// @return subcourtID The subcourt ID.
+    /// @return minJurors The minimum number of jurors required.
     function extraDataToSubcourtIDAndMinJurors(
         bytes memory _extraData
     ) internal view returns (uint96 subcourtID, uint256 minJurors) {
@@ -621,18 +575,17 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
                 minJurors := mload(add(_extraData, 0x40))
             }
             if (subcourtID >= courts.length) subcourtID = 0;
-            if (minJurors == 0) minJurors = MIN_JURORS;
+            if (minJurors == 0) minJurors = DEFAULT_NB_OF_JURORS;
         } else {
             subcourtID = 0;
-            minJurors = MIN_JURORS;
+            minJurors = DEFAULT_NB_OF_JURORS;
         }
     }
 
-    /** @dev Packs an account and a subcourt ID into a stake path ID.
-     *  @param _account The account to pack.
-     *  @param _subcourtID The subcourt ID to pack.
-     *  @return stakePathID The stake path ID.
-     */
+    /// @dev Packs an account and a subcourt ID into a stake path ID.
+    /// @param _account The account to pack.
+    /// @param _subcourtID The subcourt ID to pack.
+    /// @return stakePathID The stake path ID.
     function accountAndSubcourtIDToStakePathID(
         address _account,
         uint96 _subcourtID
@@ -658,13 +611,42 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         }
     }
 
-    /* Interface Views */
+    // ************************************* //
+    // *           Public Views            * //
+    // ************************************* //
 
-    /** @dev Gets a specified subcourt's non primitive properties.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @return children The subcourt's child court list.
-     *  @return timesPerPeriod The subcourt's time per period.
-     */
+    /// @inheritdoc IArbitratorV2
+    function arbitrationCost(bytes memory _extraData) public view override returns (uint256 cost) {
+        cost = foreignGateway.arbitrationCost(_extraData);
+    }
+
+    /// @inheritdoc IArbitratorV2
+    function arbitrationCost(
+        bytes calldata /*_extraData*/,
+        IERC20 /*_feeToken*/
+    ) public pure override returns (uint256 /*cost*/) {
+        revert("Not supported");
+    }
+
+    /// @dev Gets the current ruling of a specified dispute.
+    /// @param _disputeID The ID of the dispute.
+    /// @return ruling The current ruling.
+    /// @return tied Whether it's a tie or not.
+    /// @return overridden Whether the ruling was overridden by appeal funding or not.
+    function currentRuling(uint256 _disputeID) public view returns (uint256 ruling, bool tied, bool /*overridden*/) {
+        Dispute storage dispute = disputes[_disputeID];
+        if (dispute.voteCounters.length == 0) {
+            ruling = disputesRuling[_disputeID];
+        } else {
+            tied = dispute.voteCounters[dispute.voteCounters.length - 1].tied;
+            ruling = tied ? 0 : dispute.voteCounters[dispute.voteCounters.length - 1].winningChoice;
+        }
+    }
+
+    /// @dev Gets a specified subcourt's non primitive properties.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @return children The subcourt's child court list.
+    /// @return timesPerPeriod The subcourt's time per period.
     function getSubcourt(
         uint96 _subcourtID
     ) external view returns (uint256[] memory children, uint256[4] memory timesPerPeriod) {
@@ -673,15 +655,14 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         timesPerPeriod = subcourt.timesPerPeriod;
     }
 
-    /** @dev Gets a specified vote for a specified appeal in a specified dispute.
-     *  @param _disputeID The ID of the dispute.
-     *  @param _appeal The appeal.
-     *  @param _voteID The ID of the vote.
-     *  @return account The account for vote.
-     *  @return commit  The commit for vote.
-     *  @return choice  The choice for vote.
-     *  @return voted True if the account voted, False otherwise.
-     */
+    /// @dev Gets a specified vote for a specified appeal in a specified dispute.
+    /// @param _disputeID The ID of the dispute.
+    /// @param _appeal The appeal.
+    /// @param _voteID The ID of the vote.
+    /// @return account The account for vote.
+    /// @return commit  The commit for vote.
+    /// @return choice  The choice for vote.
+    /// @return voted True if the account voted, False otherwise.
     function getVote(
         uint256 _disputeID,
         uint256 _appeal,
@@ -694,16 +675,15 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         voted = vote.voted;
     }
 
-    /** @dev Gets the vote counter for a specified appeal in a specified dispute.
-     *  Note: This function is only to be used by the interface and it won't work if the number of choices is too high.
-     *  @param _disputeID The ID of the dispute.
-     *  @param _appeal The appeal.
-     *  @return winningChoice The winning choice.
-     *  @return counts The count.
-     *  @return tied Whether the vote tied.
-     *  `O(n)` where
-     *  `n` is the number of choices of the dispute.
-     */
+    /// @dev Gets the vote counter for a specified appeal in a specified dispute.
+    /// Note: This function is only to be used by the interface and it won't work if the number of choices is too high.
+    /// @param _disputeID The ID of the dispute.
+    /// @param _appeal The appeal.
+    /// @return winningChoice The winning choice.
+    /// @return counts The count.
+    /// @return tied Whether the vote tied.
+    /// `O(n)` where
+    /// `n` is the number of choices of the dispute.
     function getVoteCounter(
         uint256 _disputeID,
         uint256 _appeal
@@ -716,17 +696,16 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         tied = voteCounter.tied;
     }
 
-    /** @dev Gets a specified dispute's non primitive properties.
-     *  @param _disputeID The ID of the dispute.
-     *  @return votesLengths The dispute's vote length.
-     *  @return tokensAtStakePerJuror The dispute's required tokens at stake per Juror.
-     *  @return totalFeesForJurors The dispute's total fees for Jurors.
-     *  @return votesInEachRound The dispute's counter of votes made in each round.
-     *  @return repartitionsInEachRound The dispute's counter of vote reward repartitions made in each round.
-     *  @return penaltiesInEachRound The dispute's amount of tokens collected from penalties in each round.
-     *  `O(a)` where
-     *  `a` is the number of appeals of the dispute.
-     */
+    /// @dev Gets a specified dispute's non primitive properties.
+    /// @param _disputeID The ID of the dispute.
+    /// @return votesLengths The dispute's vote length.
+    /// @return tokensAtStakePerJuror The dispute's required tokens at stake per Juror.
+    /// @return totalFeesForJurors The dispute's total fees for Jurors.
+    /// @return votesInEachRound The dispute's counter of votes made in each round.
+    /// @return repartitionsInEachRound The dispute's counter of vote reward repartitions made in each round.
+    /// @return penaltiesInEachRound The dispute's amount of tokens collected from penalties in each round.
+    /// `O(a)` where
+    /// `a` is the number of appeals of the dispute.
     function getDispute(
         uint256 _disputeID
     )
@@ -751,20 +730,18 @@ contract xKlerosLiquidV2 is Initializable, ITokenController, IArbitrator {
         penaltiesInEachRound = dispute.penaltiesInEachRound;
     }
 
-    /** @dev Gets a specified juror's non primitive properties.
-     *  @param _account The address of the juror.
-     *  @return subcourtIDs The juror's IDs of subcourts where the juror has stake path.
-     */
+    /// @dev Gets a specified juror's non primitive properties.
+    /// @param _account The address of the juror.
+    /// @return subcourtIDs The juror's IDs of subcourts where the juror has stake path.
     function getJuror(address _account) external view returns (uint96[] memory subcourtIDs) {
         Juror storage juror = jurors[_account];
         subcourtIDs = juror.subcourtIDs;
     }
 
-    /** @dev Gets the stake of a specified juror in a specified subcourt.
-     *  @param _account The address of the juror.
-     *  @param _subcourtID The ID of the subcourt.
-     *  @return stake The stake.
-     */
+    /// @dev Gets the stake of a specified juror in a specified subcourt.
+    /// @param _account The address of the juror.
+    /// @param _subcourtID The ID of the subcourt.
+    /// @return stake The stake.
     function stakeOf(address _account, uint96 _subcourtID) external view returns (uint256 stake) {
         return
             sortitionSumTrees.stakeOf(

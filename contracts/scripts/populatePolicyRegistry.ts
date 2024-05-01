@@ -1,16 +1,24 @@
-import { deployments, getNamedAccounts, getChainId, ethers } from "hardhat";
+import { deployments, getNamedAccounts, getChainId, ethers, network } from "hardhat";
 import { PolicyRegistry } from "../typechain-types";
 import policiesV1Mainnet from "../config/policies.v1.mainnet.json";
 import policiesV1GnosisChain from "../config/policies.v1.gnosischain.json";
+import policiesV2ArbitrumTestnet from "../config/policies.v2.testnet.json";
+import policiesV2ArbitrumDevnet from "../config/policies.v2.devnet.json";
+import { isDevnet } from "../deploy/utils";
 
 enum HomeChains {
   ARBITRUM_ONE = 42161,
-  ARBITRUM_RINKEBY = 421611,
-  ARBITRUM_GOERLI = 421613,
+  ARBITRUM_SEPOLIA = 421614,
   HARDHAT = 31337,
 }
 
-const FROM_GNOSIS = true;
+enum Sources {
+  V1_MAINNET,
+  V1_GNOSIS,
+  V2_DEVNET,
+  V2_TESTNET,
+}
+const from = isDevnet(network) ? Sources.V2_DEVNET : Sources.V2_TESTNET;
 
 async function main() {
   // fallback to hardhat node signers on local network
@@ -24,15 +32,36 @@ async function main() {
     console.log("deploying to %s with deployer %s", HomeChains[chainId], deployer);
   }
 
-  const policiesV1 = FROM_GNOSIS
-    ? policiesV1GnosisChain.map((policy) => ({
+  let policiesV2;
+  switch (+from) {
+    case Sources.V1_MAINNET: {
+      const policiesV1 = policiesV1Mainnet;
+
+      // WARNING: skip the Forking court at id 0, so the v1 courts are shifted by 1
+      policiesV2 = policiesV1.map((policy) => ({ ...policy, court: policy.court + 1 }));
+      break;
+    }
+    case Sources.V1_GNOSIS: {
+      const policiesV1 = policiesV1GnosisChain.map((policy) => ({
         ...policy,
         name: policy.name.replace("xDai ", ""),
-      }))
-    : policiesV1Mainnet;
+      }));
 
-  // WARNING: skip the Forking court at id 0, so the v1 courts are shifted by 1
-  const policiesV2 = policiesV1.map((policy) => ({ ...policy, court: policy.court + 1 }));
+      // WARNING: skip the Forking court at id 0, so the v1 courts are shifted by 1
+      policiesV2 = policiesV1.map((policy) => ({ ...policy, court: policy.court + 1 }));
+      break;
+    }
+    case Sources.V2_DEVNET: {
+      policiesV2 = policiesV2ArbitrumDevnet;
+      break;
+    }
+    case Sources.V2_TESTNET: {
+      policiesV2 = policiesV2ArbitrumTestnet;
+      break;
+    }
+    default:
+      return;
+  }
 
   const policyRegistryDeployment = await deployments.get("PolicyRegistry");
   const policyRegistry = (await ethers.getContractAt(

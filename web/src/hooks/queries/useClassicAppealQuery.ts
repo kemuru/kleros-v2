@@ -1,11 +1,13 @@
-import useSWR from "swr";
-import { gql } from "graphql-request";
-import { ClassicAppealQuery } from "src/graphql/generated";
+import { graphql } from "src/graphql";
+import { ClassicAppealQuery } from "src/graphql/graphql";
+import { useQuery } from "@tanstack/react-query";
+import { graphqlQueryFnHelper } from "utils/graphqlQueryFnHelper";
 export type { ClassicAppealQuery };
 
-const classicAppealQuery = gql`
-  query ClassicAppeal($disputeID: ID!) {
+const classicAppealQuery = graphql(`
+  query ClassicAppeal($disputeID: ID!, $orderBy: DisputeKitDispute_orderBy, $orderDirection: OrderDirection) {
     dispute(id: $disputeID) {
+      period
       court {
         id
         timesPerPeriod
@@ -14,7 +16,7 @@ const classicAppealQuery = gql`
         id
       }
       lastPeriodChange
-      disputeKitDispute {
+      disputeKitDispute(orderBy: $orderBy, orderDirection: $orderDirection) {
         id
         currentLocalRoundIndex
         localRounds {
@@ -27,17 +29,21 @@ const classicAppealQuery = gql`
       }
     }
   }
-`;
+`);
 
 export const useClassicAppealQuery = (id?: string | number) => {
-  const { data, error, isValidating } = useSWR(() =>
-    typeof id !== "undefined"
-      ? {
-          query: classicAppealQuery,
-          variables: { disputeID: id?.toString() },
-        }
-      : false
-  );
-  const result = data ? (data as ClassicAppealQuery) : undefined;
-  return { data: result, error, isValidating };
+  const isEnabled = id !== undefined;
+
+  return useQuery<ClassicAppealQuery>({
+    queryKey: ["refetchOnBlock", `classicAppealQuery${id}`],
+    enabled: isEnabled,
+    queryFn: async () =>
+      isEnabled
+        ? await graphqlQueryFnHelper(classicAppealQuery, {
+            disputeID: id?.toString(),
+            orderBy: "timestamp",
+            orderDirection: "asc",
+          })
+        : undefined,
+  });
 };

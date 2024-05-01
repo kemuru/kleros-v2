@@ -1,9 +1,10 @@
-import useSWR from "swr";
-import { gql } from "graphql-request";
-import { HomePageQuery } from "src/graphql/generated";
+import { graphql } from "src/graphql";
+import { HomePageQuery } from "src/graphql/graphql";
+import { useQuery } from "@tanstack/react-query";
+import { graphqlQueryFnHelper } from "utils/graphqlQueryFnHelper";
 export type { HomePageQuery };
 
-const homePageQuery = gql`
+const homePageQuery = graphql(`
   query HomePage($timeframe: ID) {
     disputes(first: 3) {
       id
@@ -17,13 +18,14 @@ const homePageQuery = gql`
       cases
     }
   }
-`;
+`);
 
 export const useHomePageQuery = (timeframe: number) => {
-  const { data, error, isValidating } = useSWR({
-    query: homePageQuery,
-    variables: { timeframe: timeframe.toString() },
+  const isEnabled = timeframe !== undefined;
+
+  return useQuery({
+    queryKey: [`homePageQuery${timeframe}`],
+    enabled: isEnabled,
+    queryFn: async () => await graphqlQueryFnHelper(homePageQuery, { timeframe: timeframe.toString() }),
   });
-  const result = data ? (data as HomePageQuery) : undefined;
-  return { data: result, error, isValidating };
 };

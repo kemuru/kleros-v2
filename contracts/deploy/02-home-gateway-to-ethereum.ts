@@ -1,11 +1,8 @@
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
 import { ethers } from "hardhat";
-
-enum HomeChains {
-  ARBITRUM_ONE = 42161,
-  ARBITRUM_GOERLI = 421613,
-}
+import { HardhatChain, HomeChains, isSkipped } from "./utils";
+import { deployUpgradable } from "./utils/deployUpgradable";
 
 // TODO: use deterministic deployments
 
@@ -16,28 +13,35 @@ const deployHomeGateway: DeployFunction = async (hre: HardhatRuntimeEnvironment)
   // fallback to hardhat node signers on local network
   const deployer = (await getNamedAccounts()).deployer ?? (await hre.ethers.getSigners())[0].address;
   const chainId = Number(await getChainId());
-  console.log("Deploying to chainId %s with deployer %s", chainId, deployer);
+  console.log("deploying to chainId %s with deployer %s", chainId, deployer);
 
-  const veaSender = await deployments.get("FastBridgeSenderToEthereum");
+  const veaInbox = await deployments.get("VeaInboxArbToEthDevnet");
   const klerosCore = await deployments.get("KlerosCore");
 
-  const foreignGateway = await hre.companionNetworks.foreignGoerli.deployments.get("ForeignGatewayOnEthereum");
-  const foreignChainId = Number(await hre.companionNetworks.foreignGoerli.getChainId());
-  const foreignChainName = await hre.companionNetworks.foreignGoerli.deployments.getNetworkName();
-  console.log("Using ForeignGateway %s on chainId %s (%s)", foreignGateway.address, foreignChainId, foreignChainName);
+  const foreignGateway = await hre.companionNetworks.foreignSepolia.deployments.get("ForeignGatewayOnEthereum");
+  const foreignChainId = Number(await hre.companionNetworks.foreignSepolia.getChainId());
+  const foreignChainName = await hre.companionNetworks.foreignSepolia.deployments.getNetworkName();
+  console.log("using ForeignGateway %s on chainId %s (%s)", foreignGateway.address, foreignChainId, foreignChainName);
 
-  await deploy("HomeGatewayToEthereum", {
+  await deployUpgradable(deployments, "HomeGatewayToEthereum", {
     from: deployer,
     contract: "HomeGateway",
-    args: [deployer, klerosCore.address, veaSender.address, foreignGateway.address, foreignChainId],
+    args: [
+      deployer,
+      klerosCore.address,
+      veaInbox.address,
+      foreignChainId,
+      foreignGateway.address,
+      ethers.constants.AddressZero, // feeToken is ETH
+    ],
     log: true,
   }); // nonce+0
 };
 
 deployHomeGateway.tags = ["HomeGatewayToEthereum"];
-deployHomeGateway.skip = async ({ getChainId }) => {
-  const chainId = Number(await getChainId());
-  return !HomeChains[chainId];
+deployHomeGateway.skip = async ({ network }) => {
+  const chainId = network.config.chainId ?? 0;
+  return isSkipped(network, !HomeChains[chainId] || HardhatChain[chainId] !== undefined);
 };
 
 export default deployHomeGateway;

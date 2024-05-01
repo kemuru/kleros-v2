@@ -1,13 +1,17 @@
-import useSWRImmutable from "swr/immutable";
-import { useConnectedContract } from "hooks/useConnectedContract";
+import { useQuery } from "@tanstack/react-query";
+import { getKlerosCore } from "hooks/contracts/generated";
+import { isUndefined } from "utils/index";
 
 export const useAppealCost = (disputeID?: string) => {
-  const KlerosCore = useConnectedContract("KlerosCore");
-  return useSWRImmutable(
-    () => (KlerosCore ? `AppealCost${disputeID}` : false),
-    async () => {
-      if (!KlerosCore) return;
-      return KlerosCore.appealCost(disputeID);
-    }
-  );
+  const klerosCore = getKlerosCore({});
+  const isEnabled = !isUndefined(klerosCore) && !isUndefined(disputeID);
+  return useQuery({
+    queryKey: [`AppealCost${disputeID}`],
+    enabled: isEnabled,
+    staleTime: Infinity,
+    queryFn: async () => {
+      if (!klerosCore || typeof disputeID === "undefined") return;
+      return await klerosCore.read.appealCost([BigInt(disputeID)]);
+    },
+  });
 };

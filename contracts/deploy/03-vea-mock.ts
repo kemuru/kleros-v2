@@ -1,9 +1,10 @@
 import { HardhatRuntimeEnvironment } from "hardhat/types";
 import { DeployFunction } from "hardhat-deploy/types";
-import { ethers } from "hardhat";
-import getContractAddress from "../deploy-helpers/getContractAddress";
-
-const HARDHAT_NETWORK = 31337;
+import { getContractAddress } from "./utils/getContractAddress";
+import { KlerosCore__factory } from "../typechain-types";
+import disputeTemplate from "../test/fixtures/DisputeTemplate.simple.json";
+import { Courts, HardhatChain, isSkipped } from "./utils";
+import { deployUpgradable } from "./utils/deployUpgradable";
 
 // TODO: use deterministic deployments
 
@@ -14,7 +15,7 @@ const deployHomeGateway: DeployFunction = async (hre: HardhatRuntimeEnvironment)
 
   // fallback to hardhat node signers on local network
   const deployer = (await getNamedAccounts()).deployer ?? (await hre.ethers.getSigners())[0].address;
-  console.log("Deploying to chainId %s with deployer %s", HARDHAT_NETWORK, deployer);
+  console.log("deploying to chainId %s with deployer %s", HardhatChain.HARDHAT, deployer);
 
   const klerosCore = await deployments.get("KlerosCore");
 
@@ -23,45 +24,71 @@ const deployHomeGateway: DeployFunction = async (hre: HardhatRuntimeEnvironment)
     log: true,
   });
 
-  const nonce = await ethers.provider.getTransactionCount(deployer);
-  const homeGatewayAddress = getContractAddress(deployer, nonce + 1);
-  console.log("Calculated future HomeGatewayToEthereum address for nonce %d: %s", nonce, homeGatewayAddress);
+  let nonce = await ethers.provider.getTransactionCount(deployer);
+  nonce += 3; // deployed on the 4th tx (nonce+3): SortitionModule Impl tx, SortitionModule Proxy tx, KlerosCore Impl tx, KlerosCore Proxy tx
+  const homeGatewayAddress = getContractAddress(deployer, nonce);
+  console.log("calculated future HomeGatewayToEthereum address for nonce %d: %s", nonce, homeGatewayAddress);
 
-  const homeChainIdAsBytes32 = hexZeroPad(hexlify(HARDHAT_NETWORK), 32);
-  const foreignGateway = await deploy("ForeignGatewayOnEthereum", {
+  const homeChainIdAsBytes32 = hexZeroPad(hexlify(HardhatChain.HARDHAT), 32);
+  const foreignGateway = await deployUpgradable(deployments, "ForeignGatewayOnEthereum", {
     from: deployer,
     contract: "ForeignGateway",
-    args: [deployer, vea.address, homeGatewayAddress, homeChainIdAsBytes32],
+    args: [deployer, vea.address, homeChainIdAsBytes32, homeGatewayAddress],
     gasLimit: 4000000,
     log: true,
-  }); // nonce+0
+  }); // nonce (implementation), nonce+1 (proxy)
+  console.log("foreignGateway.address: ", foreignGateway.address);
 
-  await deploy("HomeGatewayToEthereum", {
+  await deployUpgradable(deployments, "HomeGatewayToEthereum", {
     from: deployer,
     contract: "HomeGateway",
-    args: [deployer, klerosCore.address, vea.address, foreignGateway.address, HARDHAT_NETWORK],
+    args: [
+      deployer,
+      klerosCore.address,
+      vea.address,
+      HardhatChain.HARDHAT,
+      foreignGateway.address,
+      ethers.constants.AddressZero, // feeToken
+    ],
     gasLimit: 4000000,
     log: true,
-  }); // nonce+1
+  }); // nonce+2 (implementation), nonce+3 (proxy)
 
-  await execute(
-    "ForeignGatewayOnEthereum",
-    { from: deployer, log: true },
-    "changeCourtJurorFee",
-    0,
-    ethers.BigNumber.from(10).pow(17)
-  );
+  // TODO: disable the gateway until fully initialized with the correct fees OR allow disputeCreators to add funds again if necessary.
+  const signer = (await hre.ethers.getSigners())[0];
+  const core = await KlerosCore__factory.connect(klerosCore.address, signer);
+  // TODO: set up the correct fees for the FORKING_COURT
+  const fee = (await core.courts(Courts.GENERAL)).feeForJuror;
+  await execute("ForeignGatewayOnEthereum", { from: deployer, log: true }, "changeCourtJurorFee", Courts.GENERAL, fee);
+  // TODO: set up the correct fees for the lower courts
 
-  const metaEvidenceUri = `https://raw.githubusercontent.com/kleros/kleros-v2/master/contracts/deployments/goerli/MetaEvidence_ArbitrableExample.json`;
-
-  await deploy("ArbitrableExampleEthFee", {
+  const disputeTemplateRegistry = await deployUpgradable(deployments, "DisputeTemplateRegistry", {
     from: deployer,
-    args: [foreignGateway.address, metaEvidenceUri],
+    args: [deployer],
+    log: true,
+  });
+
+  // TODO: debug why this extraData fails but "0x00" works
+  // const extraData =
+  //   "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000003"; // General court, 3 jurors
+  const extraData = "0x00";
+  await deploy("ArbitrableExample", {
+    from: deployer,
+    args: [
+      foreignGateway.address,
+      disputeTemplate,
+      "disputeTemplateMapping: TODO",
+      extraData,
+      disputeTemplateRegistry.address,
+      ethers.constants.AddressZero,
+    ],
     log: true,
   });
 };
 
 deployHomeGateway.tags = ["VeaMock"];
-deployHomeGateway.skip = async ({ getChainId }) => HARDHAT_NETWORK !== Number(await getChainId());
+deployHomeGateway.skip = async ({ network }) => {
+  return isSkipped(network, HardhatChain[network.config.chainId ?? 0] === undefined);
+};
 
 export default deployHomeGateway;

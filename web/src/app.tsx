@@ -1,53 +1,45 @@
 import React from "react";
-import { SWRConfig } from "swr";
-import { request } from "graphql-request";
-import { Routes, Route } from "react-router-dom";
+import { Route } from "react-router-dom";
+import { SentryRoutes } from "./utils/sentry";
 import "react-loading-skeleton/dist/skeleton.css";
+import "react-toastify/dist/ReactToastify.css";
 import Web3Provider from "context/Web3Provider";
+import IsListProvider from "context/IsListProvider";
+import QueryClientProvider from "context/QueryClientProvider";
 import StyledComponentsProvider from "context/StyledComponentsProvider";
-import WrongChainBoundary from "components/WrongChainBoundary";
+import RefetchOnBlock from "context/RefetchOnBlock";
 import Layout from "layout/index";
 import Home from "./pages/Home";
 import Cases from "./pages/Cases";
 import Dashboard from "./pages/Dashboard";
 import Courts from "./pages/Courts";
-
-import "react-toastify/dist/ReactToastify.css";
-
-const fetcherBuilder =
-  (url: string) =>
-  ({ query, variables }: { query: string; variables?: any }) => {
-    console.log("fetching subgraph", query, variables);
-    return request(url, query, variables);
-  };
+import DisputeTemplateView from "./pages/DisputeTemplateView";
+import DisputeResolver from "./pages/Resolver";
+import { NewDisputeProvider } from "./context/NewDisputeContext";
 
 const App: React.FC = () => {
   return (
     <StyledComponentsProvider>
-      <SWRConfig
-        value={{
-          fetcher: fetcherBuilder(
-            "https://api.thegraph.com/subgraphs/name/alcercu/kleroscoretest"
-          ),
-        }}
-      >
+      <QueryClientProvider>
+        <RefetchOnBlock />
         <Web3Provider>
-          <WrongChainBoundary>
-            <Routes>
-              <Route path="/" element={<Layout />}>
-                <Route index element={<Home />} />
-                <Route path="cases/*" element={<Cases />} />
-                <Route path="courts/*" element={<Courts />} />
-                <Route path="dashboard" element={<Dashboard />} />
-                <Route
-                  path="*"
-                  element={<h1>Justice not found here ¯\_( ͡° ͜ʖ ͡°)_/¯</h1>}
-                />
-              </Route>
-            </Routes>
-          </WrongChainBoundary>
+          <IsListProvider>
+            <NewDisputeProvider>
+              <SentryRoutes>
+                <Route path="/" element={<Layout />}>
+                  <Route index element={<Home />} />
+                  <Route path="cases/*" element={<Cases />} />
+                  <Route path="courts/*" element={<Courts />} />
+                  <Route path="dashboard/:page/:order/:filter" element={<Dashboard />} />
+                  <Route path="disputeTemplate" element={<DisputeTemplateView />} />
+                  <Route path="resolver/*" element={<DisputeResolver />} />
+                  <Route path="*" element={<h1>Justice not found here ¯\_( ͡° ͜ʖ ͡°)_/¯</h1>} />
+                </Route>
+              </SentryRoutes>
+            </NewDisputeProvider>
+          </IsListProvider>
         </Web3Provider>
-      </SWRConfig>
+      </QueryClientProvider>
     </StyledComponentsProvider>
   );
 };

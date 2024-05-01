@@ -1,9 +1,10 @@
-import useSWR from "swr";
-import { gql } from "graphql-request";
-import { CourtTreeQuery } from "src/graphql/generated";
+import { graphql } from "src/graphql";
+import { CourtTreeQuery } from "src/graphql/graphql";
+import { useQuery } from "@tanstack/react-query";
+import { graphqlQueryFnHelper } from "utils/graphqlQueryFnHelper";
 export type { CourtTreeQuery };
 
-const courtTreeQuery = gql`
+const courtTreeQuery = graphql(`
   query CourtTree {
     court(id: "1") {
       name
@@ -30,12 +31,26 @@ const courtTreeQuery = gql`
       }
     }
   }
-`;
+`);
 
 export const useCourtTree = () => {
-  const { data, error, isValidating } = useSWR({
-    query: courtTreeQuery,
+  return useQuery<CourtTreeQuery>({
+    queryKey: ["courtTreeQuery"],
+    queryFn: async () => await graphqlQueryFnHelper(courtTreeQuery, {}),
   });
-  const result = data ? (data as CourtTreeQuery) : undefined;
-  return { data: result, error, isValidating };
 };
+
+interface IItem {
+  label: string;
+  value: string;
+  children?: IItem[];
+}
+
+export const rootCourtToItems = (
+  court: NonNullable<CourtTreeQuery["court"]>,
+  value: "id" | "path" = "path"
+): IItem => ({
+  label: court.name ? court.name : "Unnamed Court",
+  value: value === "id" ? court.id : `/courts/${court.id}`,
+  children: court.children.length > 0 ? court.children.map((child) => rootCourtToItems(child, value)) : undefined,
+});

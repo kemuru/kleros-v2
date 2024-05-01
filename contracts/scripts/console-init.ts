@@ -1,19 +1,20 @@
 // .load scripts/console-init.ts
 me = (await ethers.provider.listAccounts())[0];
 core = await ethers.getContract("KlerosCore");
+sortition = await hre.ethers.getContract("SortitionModule");
 disputeKit = await ethers.getContract("DisputeKitClassic");
 pnk = await ethers.getContract("PNK");
 registry = await ethers.getContract("PolicyRegistry");
 rng = await ethers.getContract("RandomizerRNG");
 rng2 = await ethers.getContract("BlockHashRNG");
 gateway = await ethers.getContract("HomeGatewayToGnosis");
-sender = await ethers.getContract("FastBridgeSenderToGnosis");
 resolver = await ethers.getContract("DisputeResolver");
+faucet = await ethers.getContract("PNKFaucet");
+sender = await ethers.getContract("VeaOutboxArbToGnosisDevnet");
 options = { gasLimit: 10000000, gasPrice: 5000000000 };
 var disputeID = 0;
 
-console.log("core phase: %s", await core.phase());
-console.log("disputekit phase: %s", await disputeKit.phase());
+console.log("sortition phase: %s", await sortition.phase());
 console.log("freezingPhase timeout? %s", await core.freezingPhaseTimeout());
 
 const relayCreateDispute = async (blockHash, foreignDisputeID) => {
@@ -92,11 +93,11 @@ const createDisputeOnResolver = async () => {
   }
 };
 
-const passPhaseDk = async () => {
-  const before = await disputeKit.phase();
+const passPhase = async () => {
+  const before = await sortition.phase();
   var tx;
   try {
-    tx = await (await disputeKit.passPhase(options)).wait();
+    tx = await (await sortition.passPhase(options)).wait();
     console.log("txID: %s", tx?.transactionHash);
   } catch (e) {
     if (typeof e === "string") {
@@ -105,25 +106,7 @@ const passPhaseDk = async () => {
       console.log("%O", e);
     }
   } finally {
-    const after = await disputeKit.phase();
-    console.log("Phase: %d -> %d", before, after);
-  }
-};
-
-const passPhaseCore = async () => {
-  const before = await core.phase();
-  var tx;
-  try {
-    tx = await (await core.passPhase(options)).wait();
-    console.log("txID: %s", tx?.transactionHash);
-  } catch (e) {
-    if (typeof e === "string") {
-      console.log("Error: %s", e);
-    } else if (e instanceof Error) {
-      console.log("%O", e);
-    }
-  } finally {
-    const after = await core.phase();
+    const after = await sortition.phase();
     console.log("Phase: %d -> %d", before, after);
   }
 };

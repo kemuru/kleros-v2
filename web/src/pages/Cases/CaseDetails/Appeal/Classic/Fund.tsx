@@ -1,75 +1,22 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import styled from "styled-components";
 import { useParams } from "react-router-dom";
+import { useAccount, useBalance, usePublicClient } from "wagmi";
+import { useDebounce } from "react-use";
 import { Field, Button } from "@kleros/ui-components-library";
-import { DisputeKitClassic } from "@kleros/kleros-v2-contracts/typechain-types/src/arbitration/dispute-kits/DisputeKitClassic";
-import { useConnectedContract } from "hooks/useConnectedContract";
 import { wrapWithToast } from "utils/wrapWithToast";
+import { isUndefined } from "utils/index";
+import { EnsureChain } from "components/EnsureChain";
+import { usePrepareDisputeKitClassicFundAppeal, useDisputeKitClassicFundAppeal } from "hooks/contracts/generated";
 import { useParsedAmount } from "hooks/useParsedAmount";
-import { useETHBalance } from "hooks/queries/useETHBalance";
-import {
-  useLoserSideCountdownContext,
-  useSelectedOptionContext,
-  useFundingContext,
-} from "hooks/useClassicAppealContext";
-import { notUndefined } from "utils/index";
+import { useSelectedOptionContext, useFundingContext, useCountdownContext } from "hooks/useClassicAppealContext";
 
-const Fund: React.FC = () => {
-  const loserSideCountdown = useLoserSideCountdownContext();
-  const { fundedChoices, winningChoice } = useFundingContext();
-  const needFund =
-    notUndefined([loserSideCountdown, fundedChoices]) &&
-    (loserSideCountdown! > 0 ||
-      (fundedChoices!.length > 0 && !fundedChoices?.includes(winningChoice!)));
-  const { id } = useParams();
-  const { data: balance } = useETHBalance();
-  const [amount, setAmount] = useState("");
-  const parsedAmount = useParsedAmount(amount);
-  const [isSending, setIsSending] = useState(false);
-  const disputeKitClassic = useConnectedContract(
-    "DisputeKitClassic"
-  ) as DisputeKitClassic;
-  const { selectedOption } = useSelectedOptionContext();
-  return needFund ? (
-    <div>
-      <label>How much ETH do you want to contribute?</label>
-      <div>
-        <StyledField
-          type="number"
-          value={amount}
-          onChange={(e) => {
-            setAmount(e.target.value);
-          }}
-          placeholder="Amount to fund"
-        />
-        <StyledButton
-          disabled={isSending || !balance || parsedAmount.gt(balance)}
-          text={typeof balance === "undefined" ? "Connect to Fund" : "Fund"}
-          onClick={() => {
-            if (
-              typeof selectedOption !== "undefined" &&
-              typeof id !== "undefined"
-            ) {
-              setIsSending(true);
-              wrapWithToast(
-                disputeKitClassic.fundAppeal(id, selectedOption, {
-                  value: parsedAmount,
-                })
-              )
-                .then(() => {
-                  setAmount("");
-                  close();
-                })
-                .finally(() => setIsSending(false));
-            }
-          }}
-        />
-      </div>
-    </div>
-  ) : (
-    <></>
-  );
-};
+const Container = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+`;
 
 const StyledField = styled(Field)`
   width: 100%;
@@ -88,7 +35,102 @@ const StyledField = styled(Field)`
 
 const StyledButton = styled(Button)`
   margin: auto;
-  margin-top: 12px;
+  margin-top: 4px;
 `;
+
+const StyledLabel = styled.label`
+  align-self: flex-start;
+`;
+const useNeedFund = () => {
+  const { loserSideCountdown } = useCountdownContext();
+  const { fundedChoices, winningChoice } = useFundingContext();
+  const needFund =
+    (loserSideCountdown ?? 0) > 0 ||
+    (!isUndefined(fundedChoices) &&
+      !isUndefined(winningChoice) &&
+      fundedChoices.length > 0 &&
+      !fundedChoices.includes(winningChoice));
+
+  return needFund;
+};
+
+const useFundAppeal = (parsedAmount) => {
+  const { id } = useParams();
+  const { selectedOption } = useSelectedOptionContext();
+  const { config: fundAppealConfig, isError } = usePrepareDisputeKitClassicFundAppeal({
+    enabled: !isUndefined(id) && !isUndefined(selectedOption),
+    args: [BigInt(id ?? 0), BigInt(selectedOption ?? 0)],
+    value: parsedAmount,
+  });
+
+  const { writeAsync: fundAppeal } = useDisputeKitClassicFundAppeal(fundAppealConfig);
+
+  return { fundAppeal, isError };
+};
+
+interface IFund {
+  amount: string;
+  setAmount: (val: string) => void;
+  setIsOpen: (val: boolean) => void;
+}
+
+const Fund: React.FC<IFund> = ({ amount, setAmount, setIsOpen }) => {
+  const needFund = useNeedFund();
+  const { address, isDisconnected } = useAccount();
+  const { data: balance } = useBalance({
+    address,
+    watch: true,
+  });
+  const publicClient = usePublicClient();
+
+  const [debouncedAmount, setDebouncedAmount] = useState("");
+  useDebounce(() => setDebouncedAmount(amount), 500, [amount]);
+
+  const parsedAmount = useParsedAmount(debouncedAmount);
+
+  const [isSending, setIsSending] = useState(false);
+  const { fundAppeal, isError } = useFundAppeal(parsedAmount);
+
+  const isFundDisabled = useMemo(
+    () =>
+      isDisconnected || isSending || !balance || parsedAmount > balance.value || Number(parsedAmount) <= 0 || isError,
+    [isDisconnected, isSending, balance, parsedAmount, isError]
+  );
+
+  return needFund ? (
+    <Container>
+      <StyledLabel>How much ETH do you want to contribute?</StyledLabel>
+      <StyledField
+        type="number"
+        value={amount}
+        onChange={(e) => {
+          setAmount(e.target.value);
+        }}
+        placeholder="Amount to fund"
+      />
+      <EnsureChain>
+        <StyledButton
+          disabled={isFundDisabled}
+          isLoading={isSending}
+          text={isDisconnected ? "Connect to Fund" : "Fund"}
+          onClick={() => {
+            if (fundAppeal) {
+              setIsSending(true);
+              wrapWithToast(async () => await fundAppeal().then((response) => response.hash), publicClient)
+                .then((res) => {
+                  res.status && setIsOpen(true);
+                })
+                .finally(() => {
+                  setIsSending(false);
+                });
+            }
+          }}
+        />
+      </EnsureChain>
+    </Container>
+  ) : (
+    <></>
+  );
+};
 
 export default Fund;

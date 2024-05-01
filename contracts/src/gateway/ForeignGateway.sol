@@ -1,23 +1,21 @@
 // SPDX-License-Identifier: MIT
 
-/**
- *  @authors: [@jaybuidl, @shotaronowhere, @shalzz]
- *  @reviewers: []
- *  @auditors: []
- *  @bounties: []
- *  @deployments: []
- */
+/// @custom:authors: [@jaybuidl, @shotaronowhere, @shalzz]
+/// @custom:reviewers: []
+/// @custom:auditors: []
+/// @custom:bounties: []
+/// @custom:deployments: []
 
-pragma solidity ^0.8.0;
+pragma solidity 0.8.18;
 
-import "../arbitration/IArbitrable.sol";
 import "./interfaces/IForeignGateway.sol";
+import "../proxy/UUPSProxiable.sol";
+import "../proxy/Initializable.sol";
+import "../libraries/Constants.sol";
 
-/**
- * Foreign Gateway
- * Counterpart of `HomeGateway`
- */
-contract ForeignGateway is IForeignGateway {
+/// Foreign Gateway
+/// Counterpart of `HomeGateway`
+contract ForeignGateway is IForeignGateway, UUPSProxiable, Initializable {
     // ************************************* //
     // *         Enums / Structs           * //
     // ************************************* //
@@ -34,42 +32,33 @@ contract ForeignGateway is IForeignGateway {
     // *              Events               * //
     // ************************************* //
 
-    event OutgoingDispute(
-        bytes32 disputeHash,
-        bytes32 blockhash,
-        uint256 localDisputeID,
-        uint256 _choices,
-        bytes _extraData,
-        address arbitrable
-    );
-
     event ArbitrationCostModified(uint96 indexed _courtID, uint256 _feeForJuror);
 
     // ************************************* //
     // *             Storage               * //
     // ************************************* //
 
-    uint256 public constant MIN_JURORS = 3; // The global default minimum number of jurors in a dispute.
-    uint256 public immutable override senderChainID;
-    address public immutable override senderGateway;
-    uint256 internal localDisputeID = 1; // The disputeID must start from 1 as the KlerosV1 proxy governor depends on this implementation. We now also depend on localDisputeID not ever being zero.
-    mapping(uint96 => uint256) public feeForJuror; // feeForJuror[courtID], it mirrors the value on KlerosCore.
+    uint256 internal localDisputeID; // The disputeID must start from 1 as the KlerosV1 proxy governor depends on this implementation. We now also depend on localDisputeID not ever being zero.
+    mapping(uint96 => uint256) public feeForJuror; // feeForJuror[v2CourtID], it mirrors the value on KlerosCore.
     address public governor;
-    IFastBridgeReceiver public fastBridgeReceiver;
-    IFastBridgeReceiver public depreciatedFastbridge;
-    uint256 public depreciatedFastBridgeExpiration;
+    address public veaOutbox;
+    uint256 public override homeChainID;
+    address public override homeGateway;
+    address public deprecatedVeaOutbox;
+    uint256 public deprecatedVeaOutboxExpiration;
     mapping(bytes32 => DisputeData) public disputeHashtoDisputeData;
 
     // ************************************* //
     // *        Function Modifiers         * //
     // ************************************* //
 
-    modifier onlyFromFastBridge() {
+    modifier onlyFromVea(address _messageSender) {
         require(
-            address(fastBridgeReceiver) == msg.sender ||
-                ((block.timestamp < depreciatedFastBridgeExpiration) && address(depreciatedFastbridge) == msg.sender),
-            "Access not allowed: Fast Bridge only."
+            veaOutbox == msg.sender ||
+                (block.timestamp < deprecatedVeaOutboxExpiration && deprecatedVeaOutbox == msg.sender),
+            "Access not allowed: Vea Outbox only."
         );
+        require(_messageSender == homeGateway, "Access not allowed: HomeGateway only.");
         _;
     }
 
@@ -78,16 +67,31 @@ contract ForeignGateway is IForeignGateway {
         _;
     }
 
-    constructor(
+    // ************************************* //
+    // *            Constructor            * //
+    // ************************************* //
+
+    /// @dev Constructor, initializing the implementation to reduce attack surface.
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @dev Constructs the `PolicyRegistry` contract.
+    /// @param _governor The governor's address.
+    /// @param _veaOutbox The address of the VeaOutbox.
+    /// @param _homeChainID The chainID of the home chain.
+    /// @param _homeGateway The address of the home gateway.
+    function initialize(
         address _governor,
-        IFastBridgeReceiver _fastBridgeReceiver,
-        address _senderGateway,
-        uint256 _senderChainID
-    ) {
+        address _veaOutbox,
+        uint256 _homeChainID,
+        address _homeGateway
+    ) external reinitializer(1) {
         governor = _governor;
-        fastBridgeReceiver = _fastBridgeReceiver;
-        senderGateway = _senderGateway;
-        senderChainID = _senderChainID;
+        veaOutbox = _veaOutbox;
+        homeChainID = _homeChainID;
+        homeGateway = _homeGateway;
+        localDisputeID = 1;
     }
 
     // ************************************* //
@@ -95,22 +99,40 @@ contract ForeignGateway is IForeignGateway {
     // ************************************* //
 
     /**
-     * @dev Changes the fastBridge, useful to increase the claim deposit.
-     * @param _fastBridgeReceiver The address of the new fastBridge.
-     * @param _gracePeriod The duration to accept messages from the deprecated bridge (if at all).
+     * @dev Access Control to perform implementation upgrades (UUPS Proxiable)
+     * @dev Only the governor can perform upgrades (`onlyByGovernor`)
      */
-    function changeFastbridge(IFastBridgeReceiver _fastBridgeReceiver, uint256 _gracePeriod) external onlyByGovernor {
-        // grace period to relay remaining messages in the relay / bridging process
-        depreciatedFastBridgeExpiration = block.timestamp + _fastBridgeReceiver.epochPeriod() + _gracePeriod; // 2 weeks
-        depreciatedFastbridge = fastBridgeReceiver;
-        fastBridgeReceiver = _fastBridgeReceiver;
+    function _authorizeUpgrade(address) internal view override onlyByGovernor {
+        // NOP
     }
 
-    /**
-     * @dev Changes the `feeForJuror` property value of a specified court.
-     * @param _courtID The ID of the court.
-     * @param _feeForJuror The new value for the `feeForJuror` property value.
-     */
+    /// @dev Changes the governor.
+    /// @param _governor The address of the new governor.
+    function changeGovernor(address _governor) external {
+        require(governor == msg.sender, "Access not allowed: Governor only.");
+        governor = _governor;
+    }
+
+    /// @dev Changes the outbox.
+    /// @param _veaOutbox The address of the new outbox.
+    /// @param _gracePeriod The duration to accept messages from the deprecated bridge (if at all).
+    function changeVea(address _veaOutbox, uint256 _gracePeriod) external onlyByGovernor {
+        // grace period to relay the remaining messages which are still going through the deprecated bridge.
+        deprecatedVeaOutboxExpiration = block.timestamp + _gracePeriod;
+        deprecatedVeaOutbox = veaOutbox;
+        veaOutbox = _veaOutbox;
+    }
+
+    /// @dev Changes the home gateway.
+    /// @param _homeGateway The address of the new home gateway.
+    function changeHomeGateway(address _homeGateway) external {
+        require(governor == msg.sender, "Access not allowed: Governor only.");
+        homeGateway = _homeGateway;
+    }
+
+    /// @dev Changes the `feeForJuror` property value of a specified court.
+    /// @param _courtID The ID of the court on the v2 arbitrator. Not to be confused with the courtID on KlerosLiquid.
+    /// @param _feeForJuror The new value for the `feeForJuror` property value.
     function changeCourtJurorFee(uint96 _courtID, uint256 _feeForJuror) external onlyByGovernor {
         feeForJuror[_courtID] = _feeForJuror;
         emit ArbitrationCostModified(_courtID, _feeForJuror);
@@ -120,6 +142,7 @@ contract ForeignGateway is IForeignGateway {
     // *         State Modifiers           * //
     // ************************************* //
 
+    /// @inheritdoc IArbitratorV2
     function createDispute(
         uint256 _choices,
         bytes calldata _extraData
@@ -133,13 +156,13 @@ contract ForeignGateway is IForeignGateway {
         }
         bytes32 disputeHash = keccak256(
             abi.encodePacked(
-                chainID,
-                blockhash(block.number - 1),
                 "createDispute",
+                blockhash(block.number - 1),
+                chainID,
+                msg.sender,
                 disputeID,
                 _choices,
-                _extraData,
-                msg.sender
+                _extraData
             )
         );
 
@@ -151,33 +174,40 @@ contract ForeignGateway is IForeignGateway {
             ruled: false
         });
 
-        emit OutgoingDispute(disputeHash, blockhash(block.number - 1), disputeID, _choices, _extraData, msg.sender);
-        emit DisputeCreation(disputeID, IArbitrable(msg.sender));
+        emit CrossChainDisputeOutgoing(blockhash(block.number - 1), msg.sender, disputeID, _choices, _extraData);
     }
 
-    function createDisputeERC20(
+    /// @inheritdoc IArbitratorV2
+    function createDispute(
         uint256 /*_choices*/,
         bytes calldata /*_extraData*/,
-        uint256 /*_amount*/
-    ) external override returns (uint256 /*disputeID*/) {
-        revert("Not supported yet");
+        IERC20 /*_feeToken*/,
+        uint256 /*_feeAmount*/
+    ) external pure override returns (uint256) {
+        revert("Not supported");
     }
 
+    /// @inheritdoc IArbitratorV2
     function arbitrationCost(bytes calldata _extraData) public view override returns (uint256 cost) {
         (uint96 courtID, uint256 minJurors) = extraDataToCourtIDMinJurors(_extraData);
         cost = feeForJuror[courtID] * minJurors;
     }
 
-    /**
-     * Relay the rule call from the home gateway to the arbitrable.
-     */
+    /// @inheritdoc IArbitratorV2
+    function arbitrationCost(
+        bytes calldata /*_extraData*/,
+        IERC20 /*_feeToken*/
+    ) public pure override returns (uint256 /*cost*/) {
+        revert("Not supported");
+    }
+
+    /// @inheritdoc IForeignGateway
     function relayRule(
         address _messageSender,
         bytes32 _disputeHash,
         uint256 _ruling,
         address _relayer
-    ) external override onlyFromFastBridge {
-        require(_messageSender == senderGateway, "Only the homegateway is allowed.");
+    ) external override onlyFromVea(_messageSender) {
         DisputeData storage dispute = disputeHashtoDisputeData[_disputeHash];
 
         require(dispute.id != 0, "Dispute does not exist");
@@ -186,10 +216,11 @@ contract ForeignGateway is IForeignGateway {
         dispute.ruled = true;
         dispute.relayer = _relayer;
 
-        IArbitrable arbitrable = IArbitrable(dispute.arbitrable);
+        IArbitrableV2 arbitrable = IArbitrableV2(dispute.arbitrable);
         arbitrable.rule(dispute.id, _ruling);
     }
 
+    /// @inheritdoc IForeignGateway
     function withdrawFees(bytes32 _disputeHash) external override {
         DisputeData storage dispute = disputeHashtoDisputeData[_disputeHash];
         require(dispute.id != 0, "Dispute does not exist");
@@ -204,8 +235,20 @@ contract ForeignGateway is IForeignGateway {
     // *           Public Views            * //
     // ************************************* //
 
+    /// @inheritdoc IForeignGateway
     function disputeHashToForeignID(bytes32 _disputeHash) external view override returns (uint256) {
         return disputeHashtoDisputeData[_disputeHash].id;
+    }
+
+    /// @inheritdoc IReceiverGateway
+    function senderGateway() external view override returns (address) {
+        return homeGateway;
+    }
+
+    function currentRuling(
+        uint256 /*_disputeID*/
+    ) public pure returns (uint256 /*ruling*/, bool /*tied*/, bool /*overridden*/) {
+        revert("Not supported");
     }
 
     // ************************ //
@@ -223,10 +266,10 @@ contract ForeignGateway is IForeignGateway {
                 minJurors := mload(add(_extraData, 0x40))
             }
             if (feeForJuror[courtID] == 0) courtID = 0;
-            if (minJurors == 0) minJurors = MIN_JURORS;
+            if (minJurors == 0) minJurors = Constants.DEFAULT_NB_OF_JURORS;
         } else {
             courtID = 0;
-            minJurors = MIN_JURORS;
+            minJurors = Constants.DEFAULT_NB_OF_JURORS;
         }
     }
 }

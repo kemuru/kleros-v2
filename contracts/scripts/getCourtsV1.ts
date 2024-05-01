@@ -30,7 +30,7 @@ const configByChain = new Map<number, Config>([
     100, // gnosis
     {
       courtAddress: "0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002",
-      maxCourts: 15,
+      maxCourts: 18,
     },
   ],
 ]);
@@ -47,12 +47,12 @@ async function main() {
       (result) =>
         ({
           id: courtId,
-          parent: result.parent.toString(),
+          parent: result.parent.toNumber(),
           hiddenVotes: result.hiddenVotes,
           minStake: result.minStake.toString(),
           alpha: result.alpha.toString(),
           feeForJuror: result.feeForJuror.toString(),
-          jurorsForCourtJump: result.feeForJuror.toString(),
+          jurorsForCourtJump: result.jurorsForCourtJump.toString(),
           timesPerPeriod: [],
         } as unknown as Court)
     );
